@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.*
+*.sqlite3
+data
+.cursorignore
+.cursorindexingignore
