@@ -60,7 +60,8 @@ def _openai_client() -> OpenAI:
 
 
 def _openai_model() -> str:
-    return os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    # OPENAI_MODEL may be present but empty in env/.env; guard with fallback.
+    return (os.environ.get("OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
 
 
 def _entry_source_label(source: str) -> str:
