@@ -102,7 +102,6 @@ def _commands_text() -> str:
         "/help — этот список команд\n"
         "/add — записать приём пищи (название → граммы вручную или оценка ИИ по ингредиентам)\n"
         "/today — записи за сегодня и сумма (🗑 под строкой — удалить эту запись)\n"
-        "/daily — то же, что /today\n"
         "/cancel — отменить текущий шаг в /add"
     )
 
@@ -368,7 +367,6 @@ async def post_init(application: Application) -> None:
             BotCommand("help", "Список команд"),
             BotCommand("add", "Добавить приём пищи"),
             BotCommand("today", "Записи за сегодня"),
-            BotCommand("daily", "Записи за сегодня"),
             BotCommand("cancel", "Отменить шаг в /add"),
         ]
     )
@@ -421,7 +419,6 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("today", today))
-    app.add_handler(CommandHandler("daily", today))
     app.add_handler(conv)
 
     logger.info("Бот запущен")
