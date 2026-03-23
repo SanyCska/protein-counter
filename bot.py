@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -41,8 +41,13 @@ DELETE_PREFIX = "del_"
 
 
 def _today() -> date:
-    tz_name = os.environ.get("TZ", "UTC")
-    return datetime.now(ZoneInfo(tz_name)).date()
+    tz_name = (os.environ.get("TZ") or "").strip() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ValueError, ZoneInfoNotFoundError):
+        logger.warning("Invalid TZ=%r, falling back to UTC", tz_name)
+        tz = ZoneInfo("UTC")
+    return datetime.now(tz).date()
 
 
 def _store(context: ContextTypes.DEFAULT_TYPE) -> ProteinStore:
