@@ -7,11 +7,12 @@ from typing import Any
 from openai import OpenAI
 
 
-SYSTEM = """Оцени количество пищевого белка в граммах по названию блюда и описанию ингредиентов.
+SYSTEM = """Оцени пищевой белок (граммы) и энергетическую ценность (килокалории) по названию блюда и описанию ингредиентов.
 Ответь только одним JSON-объектом, без markdown:
-{"protein_g": <число>, "confidence": "low"|"medium"|"high", "short_reason": "<одно короткое предложение на русском>"}
+{"protein_g": <число>, "calories_kcal": <число>, "confidence": "low"|"medium"|"high", "short_reason": "<одно короткое предложение на русском>"}
 Правила:
 - protein_g — неотрицательное число (граммы белка для описанной порции/приёма пищи).
+- calories_kcal — неотрицательное число (ккал для той же порции).
 - short_reason — по-русски, кратко почему такая оценка.
 - Если данных мало — дай осторожную оценку и поставь confidence: low."""
 
@@ -22,7 +23,7 @@ def estimate_protein(
     food_name: str,
     ingredients_text: str,
     model: str,
-) -> tuple[float, str]:
+) -> tuple[float, float | None, str]:
     user_msg = (
         f"Название блюда: {food_name}\n"
         f"Ингредиенты / описание:\n{ingredients_text.strip()}"
@@ -40,8 +41,19 @@ def estimate_protein(
     protein = float(data.get("protein_g", 0))
     if protein < 0:
         protein = 0.0
+    raw_kcal = data.get("calories_kcal")
+    calories: float | None
+    if raw_kcal is None:
+        calories = None
+    else:
+        try:
+            calories = float(raw_kcal)
+        except (TypeError, ValueError):
+            calories = None
+        if calories is not None and calories < 0:
+            calories = 0.0
     reason = str(data.get("short_reason", "")).strip() or "Оценка по ингредиентам."
-    return protein, reason
+    return protein, calories, reason
 
 
 def _parse_json_loose(text: str) -> dict[str, Any]:

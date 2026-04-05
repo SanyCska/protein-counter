@@ -13,6 +13,7 @@ class ProteinEntry:
     id: int
     food_name: str
     protein_g: float
+    calories_kcal: float | None
     ingredients: str | None
     source: str
 
@@ -52,6 +53,12 @@ class ProteinStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entries_user_day ON protein_entries (user_id, day)"
             )
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(protein_entries)").fetchall()
+            }
+            if "calories_kcal" not in cols:
+                conn.execute("ALTER TABLE protein_entries ADD COLUMN calories_kcal REAL")
 
     def add_entry(
         self,
@@ -62,15 +69,24 @@ class ProteinStore:
         protein_g: float,
         source: str,
         ingredients: str | None = None,
+        calories_kcal: float | None = None,
     ) -> int:
         day_s = day.isoformat()
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO protein_entries (user_id, day, food_name, protein_g, ingredients, source)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO protein_entries (user_id, day, food_name, protein_g, ingredients, source, calories_kcal)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, day_s, food_name.strip(), float(protein_g), ingredients, source),
+                (
+                    user_id,
+                    day_s,
+                    food_name.strip(),
+                    float(protein_g),
+                    ingredients,
+                    source,
+                    calories_kcal,
+                ),
             )
             return int(cur.lastrowid)
 
@@ -79,7 +95,7 @@ class ProteinStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, food_name, protein_g, ingredients, source
+                SELECT id, food_name, protein_g, calories_kcal, ingredients, source
                 FROM protein_entries
                 WHERE user_id = ? AND day = ?
                 ORDER BY id ASC
@@ -91,6 +107,11 @@ class ProteinStore:
                 id=r["id"],
                 food_name=r["food_name"],
                 protein_g=float(r["protein_g"]),
+                calories_kcal=(
+                    float(r["calories_kcal"])
+                    if r["calories_kcal"] is not None
+                    else None
+                ),
                 ingredients=r["ingredients"],
                 source=r["source"],
             )

@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-(ADD_NAME, ADD_ROUTE, ASK_MANUAL, ASK_AI, ASK_AI_CONFIRM, ASK_AI_CORRECT) = range(6)
+(ADD_NAME, ADD_ROUTE, ASK_MANUAL, ASK_MANUAL_CALORIES, ASK_AI, ASK_AI_CONFIRM, ASK_AI_CORRECT) = range(7)
 
 CALLBACK_MANUAL = "prot_manual"
 CALLBACK_AI = "prot_ai"
@@ -75,12 +75,23 @@ def _entry_source_label(source: str) -> str:
 def _today_message_text(day: date, entries: list[ProteinEntry]) -> str:
     lines = [day.isoformat(), ""]
     total = 0.0
+    total_kcal = 0.0
+    any_kcal = False
     for e in entries:
         total += e.protein_g
         src = _entry_source_label(e.source)
-        lines.append(f"• {e.food_name} — {e.protein_g:g} г ({src})")
+        if e.calories_kcal is not None:
+            any_kcal = True
+            total_kcal += e.calories_kcal
+            lines.append(
+                f"• {e.food_name} — {e.protein_g:g} г белка, {e.calories_kcal:g} ккал ({src})"
+            )
+        else:
+            lines.append(f"• {e.food_name} — {e.protein_g:g} г ({src})")
     lines.append("")
     lines.append(f"Итого: {total:g} г белка")
+    if any_kcal:
+        lines.append(f"Калории: {total_kcal:g} ккал")
     return "\n".join(lines)
 
 
@@ -101,15 +112,15 @@ def _commands_text() -> str:
         "Доступные команды:\n\n"
         "/start — приветствие\n"
         "/help — этот список команд\n"
-        "/add — записать приём пищи (название → граммы вручную или оценка ИИ по ингредиентам)\n"
-        "/today — записи за сегодня и сумма (🗑 под строкой — удалить эту запись)\n"
+        "/add — записать приём пищи (белок и калории: вручную или оценка ИИ по ингредиентам)\n"
+        "/today — записи за сегодня, сумма белка и калорий (🗑 — удалить запись)\n"
         "/cancel — отменить текущий шаг в /add"
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Привет! Я помогаю считать дневной белок.\n\n"
+        "Привет! Я помогаю считать дневной белок и калории.\n\n"
         "Полный список команд: /help"
     )
 
@@ -119,7 +130,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _clear_add_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for k in ("food_name", "ai_ingredients", "ai_estimated_g", "ai_reason"):
+    for k in (
+        "food_name",
+        "manual_protein_g",
+        "ai_ingredients",
+        "ai_estimated_g",
+        "ai_estimated_kcal",
+        "ai_reason",
+    ):
         context.user_data.pop(k, None)
 
 
@@ -143,7 +161,9 @@ async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton("Посчитать с ИИ", callback_data=CALLBACK_AI)],
     ]
     await update.message.reply_text(
-        "Как определим количество белка?",
+        "Как определим белок и калории?\n"
+        "• Вручную — сначала белок в граммах, потом калории в ккал.\n"
+        "• С ИИ — по ингредиентам оценю и белок, и калории.",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return ADD_ROUTE
@@ -153,7 +173,10 @@ async def route_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     await query.answer()
     if query.data == CALLBACK_MANUAL:
-        await query.edit_message_text("Введи количество белка в граммах (например, 25 или 25,5).")
+        await query.edit_message_text(
+            "Введи количество белка в граммах (например, 25 или 25,5). "
+            "После этого спрошу калории."
+        )
         return ASK_MANUAL
     if query.data == CALLBACK_AI:
         await query.edit_message_text(
@@ -181,18 +204,42 @@ async def manual_protein(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not food_name:
         await update.message.reply_text("Что-то пошло не так. Начни снова с /add.")
         return ConversationHandler.END
+    context.user_data["manual_protein_g"] = float(grams)
+    await update.message.reply_text(
+        "Сколько калорий в этом приёме (ккал)? Например, 450 или 320,5. "
+        "Если не хочешь вести калории — напиши 0."
+    )
+    return ASK_MANUAL_CALORIES
+
+
+async def manual_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw = update.message.text or ""
+    kcal = _parse_protein_grams(raw)
+    if kcal is None or kcal < 0:
+        await update.message.reply_text(
+            "Пришли число — калории в ккал (например, 400). Напиши 0, если калории не считаешь."
+        )
+        return ASK_MANUAL_CALORIES
+    food_name = context.user_data.get("food_name")
+    grams = context.user_data.get("manual_protein_g")
+    if not food_name or grams is None:
+        await update.message.reply_text("Что-то пошло не так. Начни снова с /add.")
+        return ConversationHandler.END
     store = _store(context)
     day = _today()
+    calories_saved: float | None = float(kcal) if kcal > 0 else None
     store.add_entry(
         user_id=update.effective_user.id,
         day=day,
         food_name=food_name,
-        protein_g=grams,
+        protein_g=float(grams),
         source="manual",
         ingredients=None,
+        calories_kcal=calories_saved,
     )
+    kcal_part = f", {kcal:g} ккал" if kcal > 0 else ""
     await update.message.reply_text(
-        f"Сохранено: {food_name} — {grams:g} г белка ({day.isoformat()})."
+        f"Сохранено: {food_name} — {float(grams):g} г белка{kcal_part} ({day.isoformat()})."
     )
     _clear_add_user_data(context)
     return ConversationHandler.END
@@ -216,7 +263,7 @@ async def ai_ingredients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Оцениваю количество белка…")
     try:
         client = _openai_client()
-        grams, reason = estimate_protein(
+        grams, kcal_est, reason = estimate_protein(
             client,
             food_name=food_name,
             ingredients_text=ingredients,
@@ -231,13 +278,19 @@ async def ai_ingredients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     day = _today()
     context.user_data["ai_ingredients"] = ingredients
     context.user_data["ai_estimated_g"] = float(grams)
+    context.user_data["ai_estimated_kcal"] = kcal_est
     context.user_data["ai_reason"] = reason
     keyboard = [
         [InlineKeyboardButton("Сохранить", callback_data=CALLBACK_AI_SAVE)],
         [InlineKeyboardButton("Исправить", callback_data=CALLBACK_AI_CORRECT)],
     ]
+    kcal_line = (
+        f"~{kcal_est:g} ккал.\n"
+        if kcal_est is not None
+        else "Калории: не удалось оценить.\n"
+    )
     await update.message.reply_text(
-        f"Оценка ИИ: ~{grams:g} г белка.\n{reason}\n\n"
+        f"Оценка ИИ: ~{grams:g} г белка, {kcal_line}{reason}\n\n"
         f"Блюдо: {food_name} ({day.isoformat()}).\n"
         "Сохранить эту оценку или ввести своё количество белка?",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -251,6 +304,7 @@ async def ai_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     food_name = context.user_data.get("food_name")
     grams = context.user_data.get("ai_estimated_g")
     ingredients = context.user_data.get("ai_ingredients")
+    kcal_est = context.user_data.get("ai_estimated_kcal")
     if not food_name or grams is None or ingredients is None:
         await query.edit_message_text("Что-то пошло не так. Начни снова с /add.")
         _clear_add_user_data(context)
@@ -265,9 +319,12 @@ async def ai_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             protein_g=float(grams),
             source="ai",
             ingredients=ingredients,
+            calories_kcal=kcal_est if isinstance(kcal_est, (int, float)) else None,
         )
+        kcal_saved = kcal_est if isinstance(kcal_est, (int, float)) else None
+        kcal_suffix = f", {float(kcal_saved):g} ккал" if kcal_saved is not None else ""
         await query.edit_message_text(
-            f"Сохранено: {food_name} — {float(grams):g} г белка ({day.isoformat()}), оценка ИИ."
+            f"Сохранено: {food_name} — {float(grams):g} г белка{kcal_suffix} ({day.isoformat()}), оценка ИИ."
         )
         _clear_add_user_data(context)
         return ConversationHandler.END
@@ -291,6 +348,8 @@ async def ai_correct_protein(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Что-то пошло не так. Начни снова с /add.")
         _clear_add_user_data(context)
         return ConversationHandler.END
+    kcal_est = context.user_data.get("ai_estimated_kcal")
+    kcal_save = kcal_est if isinstance(kcal_est, (int, float)) else None
     store = _store(context)
     day = _today()
     store.add_entry(
@@ -300,9 +359,11 @@ async def ai_correct_protein(update: Update, context: ContextTypes.DEFAULT_TYPE)
         protein_g=grams,
         source="ai_corrected",
         ingredients=ingredients,
+        calories_kcal=kcal_save,
     )
+    kcal_suffix = f", {float(kcal_save):g} ккал" if kcal_save is not None else ""
     await update.message.reply_text(
-        f"Сохранено: {food_name} — {grams:g} г белка ({day.isoformat()}), значение вручную после ИИ."
+        f"Сохранено: {food_name} — {grams:g} г белка{kcal_suffix} ({day.isoformat()}), белок вручную после ИИ."
     )
     _clear_add_user_data(context)
     return ConversationHandler.END
@@ -394,6 +455,9 @@ def main() -> None:
             ],
             ASK_MANUAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual_protein),
+            ],
+            ASK_MANUAL_CALORIES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual_calories),
             ],
             ASK_AI: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_ingredients),
