@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -34,7 +35,8 @@ logger = logging.getLogger(__name__)
     ADD_NAME, ADD_ROUTE, ASK_MANUAL, ASK_MANUAL_CALORIES,
     ASK_AI, ASK_AI_CONFIRM, ASK_AI_CORRECT,
     ASK_SAVE_PRODUCT, SAVED_SEARCH, SAVED_SELECT, SAVED_AMOUNT,
-) = range(11)
+    ASK_AI_PHOTO_CHOICE, ASK_AI_PHOTO,
+) = range(13)
 
 CALLBACK_MANUAL = "prot_manual"
 CALLBACK_AI = "prot_ai"
@@ -43,6 +45,8 @@ CALLBACK_AI_CORRECT = "ai_correct"
 CALLBACK_SAVED = "prot_saved"
 CALLBACK_SAVE_PROD_YES = "save_prod_yes"
 CALLBACK_SAVE_PROD_NO = "save_prod_no"
+CALLBACK_AI_PHOTO_YES = "ai_photo_yes"
+CALLBACK_AI_PHOTO_NO = "ai_photo_no"
 SAVED_PRODUCT_PREFIX = "sp_"
 
 DELETE_PREFIX = "del_"
@@ -151,6 +155,7 @@ def _clear_add_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
         "saved_calories_kcal",
         "save_confirm_text",
         "selected_product_id",
+        "ai_photo_url",
     ):
         context.user_data.pop(k, None)
 
@@ -197,11 +202,52 @@ async def route_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         return ASK_MANUAL
     if query.data == CALLBACK_AI:
+        keyboard = [
+            [
+                InlineKeyboardButton("С фото", callback_data=CALLBACK_AI_PHOTO_YES),
+                InlineKeyboardButton("Без фото", callback_data=CALLBACK_AI_PHOTO_NO),
+            ],
+        ]
         await query.edit_message_text(
-            "Перечисли ингредиенты (количество и единицы помогают точнее оценить)."
+            "Хочешь приложить фото блюда? Это поможет ИИ точнее оценить.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
-        return ASK_AI
+        return ASK_AI_PHOTO_CHOICE
     return ConversationHandler.END
+
+
+async def ai_photo_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if query.data == CALLBACK_AI_PHOTO_YES:
+        await query.edit_message_text("Отправь фото блюда.")
+        return ASK_AI_PHOTO
+    await query.edit_message_text(
+        "Перечисли ингредиенты (количество и единицы помогают точнее оценить)."
+    )
+    return ASK_AI
+
+
+async def ai_photo_choice_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Нажми «С фото» или «Без фото» выше.")
+    return ASK_AI_PHOTO_CHOICE
+
+
+async def ai_receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    photo = update.message.photo
+    if not photo:
+        await update.message.reply_text("Пришли фото (не файлом). Попробуй ещё раз.")
+        return ASK_AI_PHOTO
+    best = photo[-1]
+    file = await best.get_file()
+    photo_bytes = await file.download_as_bytearray()
+    b64 = base64.b64encode(bytes(photo_bytes)).decode("ascii")
+    context.user_data["ai_photo_url"] = f"data:image/jpeg;base64,{b64}"
+    await update.message.reply_text(
+        "Фото получено ✓\n"
+        "Теперь перечисли ингредиенты (количество и единицы помогают точнее оценить)."
+    )
+    return ASK_AI
 
 
 def _parse_protein_grams(text: str) -> float | None:
@@ -283,6 +329,7 @@ async def ai_ingredients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Что-то пошло не так. Начни снова с /add.")
         return ConversationHandler.END
     await update.message.reply_text("Оцениваю количество белка…")
+    photo_url = context.user_data.get("ai_photo_url")
     try:
         client = _openai_client()
         grams, kcal_est, reason = estimate_protein(
@@ -290,6 +337,7 @@ async def ai_ingredients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             food_name=food_name,
             ingredients_text=ingredients,
             model=_openai_model(),
+            image_url=photo_url,
         )
     except Exception as e:
         logger.exception("OpenAI failed")
@@ -629,6 +677,16 @@ def main() -> None:
             ],
             ASK_MANUAL_CALORIES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual_calories),
+            ],
+            ASK_AI_PHOTO_CHOICE: [
+                CallbackQueryHandler(
+                    ai_photo_choice,
+                    pattern=f"^({CALLBACK_AI_PHOTO_YES}|{CALLBACK_AI_PHOTO_NO})$",
+                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ai_photo_choice_reminder),
+            ],
+            ASK_AI_PHOTO: [
+                MessageHandler(filters.PHOTO, ai_receive_photo),
             ],
             ASK_AI: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_ingredients),

@@ -7,13 +7,14 @@ from typing import Any
 from openai import OpenAI
 
 
-SYSTEM = """Оцени пищевой белок (граммы) и энергетическую ценность (килокалории) по названию блюда и описанию ингредиентов.
+SYSTEM = """Оцени пищевой белок (граммы) и энергетическую ценность (килокалории) по названию блюда, описанию ингредиентов и фото (если приложено).
 Ответь только одним JSON-объектом, без markdown:
 {"protein_g": <число>, "calories_kcal": <число>, "confidence": "low"|"medium"|"high", "short_reason": "<одно короткое предложение на русском>"}
 Правила:
 - protein_g — неотрицательное число (граммы белка для описанной порции/приёма пищи).
 - calories_kcal — неотрицательное число (ккал для той же порции).
 - short_reason — по-русски, кратко почему такая оценка.
+- Если приложено фото — используй его для уточнения размера порции, состава и визуальной оценки блюда.
 - Если данных мало — дай осторожную оценку и поставь confidence: low."""
 
 
@@ -23,16 +24,24 @@ def estimate_protein(
     food_name: str,
     ingredients_text: str,
     model: str,
+    image_url: str | None = None,
 ) -> tuple[float, float | None, str]:
-    user_msg = (
+    text_part = (
         f"Название блюда: {food_name}\n"
         f"Ингредиенты / описание:\n{ingredients_text.strip()}"
     )
+    if image_url:
+        user_content: str | list[dict[str, Any]] = [
+            {"type": "text", "text": text_part},
+            {"type": "image_url", "image_url": {"url": image_url, "detail": "low"}},
+        ]
+    else:
+        user_content = text_part
     resp = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": user_msg},
+            {"role": "user", "content": user_content},
         ],
         temperature=0.2,
     )
