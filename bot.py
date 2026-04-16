@@ -30,12 +30,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-(ADD_NAME, ADD_ROUTE, ASK_MANUAL, ASK_MANUAL_CALORIES, ASK_AI, ASK_AI_CONFIRM, ASK_AI_CORRECT) = range(7)
+(
+    ADD_NAME, ADD_ROUTE, ASK_MANUAL, ASK_MANUAL_CALORIES,
+    ASK_AI, ASK_AI_CONFIRM, ASK_AI_CORRECT,
+    ASK_SAVE_PRODUCT, SAVED_SEARCH, SAVED_SELECT, SAVED_AMOUNT,
+) = range(11)
 
 CALLBACK_MANUAL = "prot_manual"
 CALLBACK_AI = "prot_ai"
 CALLBACK_AI_SAVE = "ai_save"
 CALLBACK_AI_CORRECT = "ai_correct"
+CALLBACK_SAVED = "prot_saved"
+CALLBACK_SAVE_PROD_YES = "save_prod_yes"
+CALLBACK_SAVE_PROD_NO = "save_prod_no"
+SAVED_PRODUCT_PREFIX = "sp_"
 
 DELETE_PREFIX = "del_"
 
@@ -69,6 +77,8 @@ def _entry_source_label(source: str) -> str:
         return "вручную"
     if source == "ai_corrected":
         return "ИИ, исправлено"
+    if source == "saved":
+        return "из сохранённых"
     return "ИИ"
 
 
@@ -137,13 +147,21 @@ def _clear_add_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
         "ai_estimated_g",
         "ai_estimated_kcal",
         "ai_reason",
+        "saved_protein_g",
+        "saved_calories_kcal",
+        "save_confirm_text",
+        "selected_product_id",
     ):
         context.user_data.pop(k, None)
 
 
 async def add_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     _clear_add_user_data(context)
-    await update.message.reply_text("Что ты ел(а)? Напиши название блюда.")
+    keyboard = [[InlineKeyboardButton("Из сохранённых", callback_data=CALLBACK_SAVED)]]
+    await update.message.reply_text(
+        "Что ты ел(а)? Напиши название блюда или выбери из сохранённых.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
     return ADD_NAME
 
 
@@ -238,11 +256,15 @@ async def manual_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         calories_kcal=calories_saved,
     )
     kcal_part = f", {kcal:g} ккал" if kcal > 0 else ""
+    confirm_text = f"Сохранено: {food_name} — {float(grams):g} г белка{kcal_part} ({day.isoformat()})."
+    context.user_data["saved_protein_g"] = float(grams)
+    context.user_data["saved_calories_kcal"] = calories_saved
+    context.user_data["save_confirm_text"] = confirm_text
     await update.message.reply_text(
-        f"Сохранено: {food_name} — {float(grams):g} г белка{kcal_part} ({day.isoformat()})."
+        confirm_text + "\n\nСохранить этот продукт для быстрого добавления в будущем?",
+        reply_markup=_save_product_keyboard(),
     )
-    _clear_add_user_data(context)
-    return ConversationHandler.END
+    return ASK_SAVE_PRODUCT
 
 
 async def ai_ingredients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -312,6 +334,7 @@ async def ai_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     day = _today()
     if query.data == CALLBACK_AI_SAVE:
         store = _store(context)
+        kcal_saved = kcal_est if isinstance(kcal_est, (int, float)) else None
         store.add_entry(
             user_id=update.effective_user.id,
             day=day,
@@ -319,15 +342,18 @@ async def ai_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             protein_g=float(grams),
             source="ai",
             ingredients=ingredients,
-            calories_kcal=kcal_est if isinstance(kcal_est, (int, float)) else None,
+            calories_kcal=kcal_saved,
         )
-        kcal_saved = kcal_est if isinstance(kcal_est, (int, float)) else None
         kcal_suffix = f", {float(kcal_saved):g} ккал" if kcal_saved is not None else ""
+        confirm_text = f"Сохранено: {food_name} — {float(grams):g} г белка{kcal_suffix} ({day.isoformat()}), оценка ИИ."
+        context.user_data["saved_protein_g"] = float(grams)
+        context.user_data["saved_calories_kcal"] = kcal_saved
+        context.user_data["save_confirm_text"] = confirm_text
         await query.edit_message_text(
-            f"Сохранено: {food_name} — {float(grams):g} г белка{kcal_suffix} ({day.isoformat()}), оценка ИИ."
+            confirm_text + "\n\nСохранить этот продукт для быстрого добавления в будущем?",
+            reply_markup=_save_product_keyboard(),
         )
-        _clear_add_user_data(context)
-        return ConversationHandler.END
+        return ASK_SAVE_PRODUCT
     if query.data == CALLBACK_AI_CORRECT:
         await query.edit_message_text(
             "Введи верное количество белка в граммах (например, 25 или 25,5)."
@@ -362,11 +388,155 @@ async def ai_correct_protein(update: Update, context: ContextTypes.DEFAULT_TYPE)
         calories_kcal=kcal_save,
     )
     kcal_suffix = f", {float(kcal_save):g} ккал" if kcal_save is not None else ""
+    confirm_text = f"Сохранено: {food_name} — {grams:g} г белка{kcal_suffix} ({day.isoformat()}), белок вручную после ИИ."
+    context.user_data["saved_protein_g"] = float(grams)
+    context.user_data["saved_calories_kcal"] = kcal_save
+    context.user_data["save_confirm_text"] = confirm_text
     await update.message.reply_text(
-        f"Сохранено: {food_name} — {grams:g} г белка{kcal_suffix} ({day.isoformat()}), белок вручную после ИИ."
+        confirm_text + "\n\nСохранить этот продукт для быстрого добавления в будущем?",
+        reply_markup=_save_product_keyboard(),
+    )
+    return ASK_SAVE_PRODUCT
+
+
+def _save_product_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Да", callback_data=CALLBACK_SAVE_PROD_YES),
+            InlineKeyboardButton("Нет", callback_data=CALLBACK_SAVE_PROD_NO),
+        ],
+    ])
+
+
+async def route_to_saved(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Введи название или часть названия продукта для поиска.")
+    return SAVED_SEARCH
+
+
+async def saved_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query_text = (update.message.text or "").strip()
+    if not query_text:
+        await update.message.reply_text("Введи текст для поиска.")
+        return SAVED_SEARCH
+    store = _store(context)
+    products = store.search_saved_products(update.effective_user.id, query_text)
+    if not products:
+        await update.message.reply_text(
+            "Ничего не найдено. Попробуй другой запрос или /cancel для отмены."
+        )
+        return SAVED_SEARCH
+    keyboard = []
+    for p in products:
+        kcal_part = f", {p.calories_kcal:g} ккал" if p.calories_kcal is not None else ""
+        label = f"{p.name} — {p.protein_g:g} г{kcal_part}"
+        if len(label) > 60:
+            label = label[:59] + "…"
+        keyboard.append(
+            [InlineKeyboardButton(label, callback_data=f"{SAVED_PRODUCT_PREFIX}{p.id}")]
+        )
+    await update.message.reply_text(
+        "Выбери продукт:", reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return SAVED_SELECT
+
+
+async def saved_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    try:
+        product_id = int(query.data[len(SAVED_PRODUCT_PREFIX):])
+    except (ValueError, IndexError):
+        await query.edit_message_text("Ошибка. Начни снова /add.")
+        return ConversationHandler.END
+    store = _store(context)
+    product = store.get_saved_product(update.effective_user.id, product_id)
+    if product is None:
+        await query.edit_message_text("Продукт не найден. Начни снова /add.")
+        return ConversationHandler.END
+    context.user_data["selected_product_id"] = product_id
+    context.user_data["food_name"] = product.name
+    kcal_part = f", {product.calories_kcal:g} ккал" if product.calories_kcal is not None else ""
+    await query.edit_message_text(
+        f"{product.name} — {product.protein_g:g} г белка{kcal_part} (на 1 порцию).\n\n"
+        "Сколько порций? (например, 1, 0.8, 2.5)"
+    )
+    return SAVED_AMOUNT
+
+
+async def saved_select_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Нажми на один из продуктов выше.")
+    return SAVED_SELECT
+
+
+async def saved_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw = update.message.text or ""
+    amount = _parse_protein_grams(raw)
+    if amount is None or amount <= 0:
+        await update.message.reply_text("Введи количество порций (например, 1 или 0.8 или 2).")
+        return SAVED_AMOUNT
+    product_id = context.user_data.get("selected_product_id")
+    food_name = context.user_data.get("food_name")
+    if not product_id or not food_name:
+        await update.message.reply_text("Что-то пошло не так. Начни снова с /add.")
+        return ConversationHandler.END
+    store = _store(context)
+    product = store.get_saved_product(update.effective_user.id, product_id)
+    if product is None:
+        await update.message.reply_text("Продукт не найден. Начни снова /add.")
+        return ConversationHandler.END
+    protein = product.protein_g * amount
+    calories = product.calories_kcal * amount if product.calories_kcal is not None else None
+    day = _today()
+    store.add_entry(
+        user_id=update.effective_user.id,
+        day=day,
+        food_name=food_name,
+        protein_g=protein,
+        source="saved",
+        ingredients=None,
+        calories_kcal=calories,
+    )
+    kcal_part = f", {calories:g} ккал" if calories is not None else ""
+    amount_label = f" × {amount:g}" if amount != 1 else ""
+    await update.message.reply_text(
+        f"Сохранено: {food_name}{amount_label} — {protein:g} г белка{kcal_part} ({day.isoformat()})."
     )
     _clear_add_user_data(context)
     return ConversationHandler.END
+
+
+async def handle_save_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    food_name = context.user_data.get("food_name")
+    protein = context.user_data.get("saved_protein_g")
+    calories = context.user_data.get("saved_calories_kcal")
+    confirm_text = context.user_data.get("save_confirm_text", "")
+    if query.data == CALLBACK_SAVE_PROD_YES:
+        if food_name and protein is not None:
+            store = _store(context)
+            store.save_product(
+                user_id=update.effective_user.id,
+                name=food_name,
+                protein_g=protein,
+                calories_kcal=calories,
+            )
+            await query.edit_message_text(
+                confirm_text + f"\nПродукт «{food_name}» добавлен в избранное ✓"
+            )
+        else:
+            await query.edit_message_text("Не удалось сохранить продукт.")
+    else:
+        await query.edit_message_text(confirm_text)
+    _clear_add_user_data(context)
+    return ConversationHandler.END
+
+
+async def save_product_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Нажми «Да» или «Нет» выше.")
+    return ASK_SAVE_PRODUCT
 
 
 async def ai_confirm_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -447,6 +617,7 @@ def main() -> None:
         entry_points=[CommandHandler("add", add_entry)],
         states={
             ADD_NAME: [
+                CallbackQueryHandler(route_to_saved, pattern=f"^{CALLBACK_SAVED}$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_name),
             ],
             ADD_ROUTE: [
@@ -471,6 +642,26 @@ def main() -> None:
             ],
             ASK_AI_CORRECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ai_correct_protein),
+            ],
+            ASK_SAVE_PRODUCT: [
+                CallbackQueryHandler(
+                    handle_save_product,
+                    pattern=f"^({CALLBACK_SAVE_PROD_YES}|{CALLBACK_SAVE_PROD_NO})$",
+                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_product_reminder),
+            ],
+            SAVED_SEARCH: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, saved_search),
+            ],
+            SAVED_SELECT: [
+                CallbackQueryHandler(
+                    saved_select,
+                    pattern=f"^{re.escape(SAVED_PRODUCT_PREFIX)}\\d+$",
+                ),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, saved_select_reminder),
+            ],
+            SAVED_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, saved_amount),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

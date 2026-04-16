@@ -18,6 +18,14 @@ class ProteinEntry:
     source: str
 
 
+@dataclass(frozen=True)
+class SavedProduct:
+    id: int
+    name: str
+    protein_g: float
+    calories_kcal: float | None
+
+
 class ProteinStore:
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
@@ -59,6 +67,21 @@ class ProteinStore:
             }
             if "calories_kcal" not in cols:
                 conn.execute("ALTER TABLE protein_entries ADD COLUMN calories_kcal REAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    protein_g REAL NOT NULL,
+                    calories_kcal REAL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_products (user_id)"
+            )
 
     def add_entry(
         self,
@@ -129,3 +152,69 @@ class ProteinStore:
                 (entry_id, user_id),
             )
             return cur.rowcount > 0
+
+    def save_product(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        protein_g: float,
+        calories_kcal: float | None = None,
+    ) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO saved_products (user_id, name, protein_g, calories_kcal) VALUES (?, ?, ?, ?)",
+                (user_id, name.strip(), float(protein_g), calories_kcal),
+            )
+            return int(cur.lastrowid)
+
+    def search_saved_products(self, user_id: int, query: str) -> list[SavedProduct]:
+        """Substring search on saved product names (case-insensitive for any script).
+
+        SQLite LIKE is only case-insensitive for ASCII; Cyrillic queries like «протеин»
+        would not match «Протеиновый». We match in Python with str.casefold().
+        """
+        q = query.strip()
+        if not q:
+            return []
+        needle = q.casefold()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name, protein_g, calories_kcal
+                FROM saved_products
+                WHERE user_id = ?
+                ORDER BY name ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        matched = [r for r in rows if needle in (r["name"] or "").casefold()]
+        matched = matched[:10]
+        return [
+            SavedProduct(
+                id=r["id"],
+                name=r["name"],
+                protein_g=float(r["protein_g"]),
+                calories_kcal=(
+                    float(r["calories_kcal"]) if r["calories_kcal"] is not None else None
+                ),
+            )
+            for r in matched
+        ]
+
+    def get_saved_product(self, user_id: int, product_id: int) -> SavedProduct | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, name, protein_g, calories_kcal FROM saved_products WHERE id = ? AND user_id = ?",
+                (product_id, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return SavedProduct(
+            id=row["id"],
+            name=row["name"],
+            protein_g=float(row["protein_g"]),
+            calories_kcal=(
+                float(row["calories_kcal"]) if row["calories_kcal"] is not None else None
+            ),
+        )
