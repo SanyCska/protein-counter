@@ -9,7 +9,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 from openai import OpenAI
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    Update,
+    WebAppInfo,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -121,21 +128,59 @@ def _today_delete_keyboard(entries: list[ProteinEntry]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _commands_text() -> str:
-    return (
-        "Доступные команды:\n\n"
-        "/start — приветствие\n"
-        "/help — этот список команд\n"
-        "/add — записать приём пищи (белок и калории: вручную или оценка ИИ по ингредиентам)\n"
-        "/today — записи за сегодня, сумма белка и калорий (🗑 — удалить запись)\n"
-        "/cancel — отменить текущий шаг в /add"
+def _webapp_url() -> str | None:
+    """Публичный HTTPS-адрес мини-аппа. Без него бот работает как раньше."""
+    url = (os.environ.get("WEBAPP_URL") or "").strip()
+    if not url:
+        return None
+    if not url.startswith("https://"):
+        logger.warning("WEBAPP_URL должен начинаться с https:// — кнопка мини-аппа отключена")
+        return None
+    return url
+
+
+def _webapp_keyboard() -> InlineKeyboardMarkup | None:
+    url = _webapp_url()
+    if url is None:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📊 Открыть дневник", web_app=WebAppInfo(url=url))]]
     )
+
+
+def _commands_text() -> str:
+    lines = [
+        "Доступные команды:",
+        "",
+        "/start — приветствие",
+        "/help — этот список команд",
+        "/add — записать приём пищи (белок и калории: вручную или оценка ИИ по ингредиентам)",
+        "/today — записи за сегодня, сумма белка и калорий (🗑 — удалить запись)",
+        "/cancel — отменить текущий шаг в /add",
+    ]
+    if _webapp_url():
+        lines.append("/app — открыть мини-апп: отчёты, микронутриенты, нагрузка, графики")
+    return "\n".join(lines)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Я помогаю считать дневной белок и калории.\n\n"
-        "Полный список команд: /help"
+        "Полный список команд: /help",
+        reply_markup=_webapp_keyboard(),
+    )
+
+
+async def app_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    keyboard = _webapp_keyboard()
+    if keyboard is None:
+        await update.message.reply_text(
+            "Мини-апп не настроен: укажите WEBAPP_URL (https-адрес фронтенда) в окружении."
+        )
+        return
+    await update.message.reply_text(
+        "Дневник, отчёты по микронутриентам, нагрузка и графики — здесь:",
+        reply_markup=keyboard,
     )
 
 
@@ -641,15 +686,21 @@ async def delete_today_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def post_init(application: Application) -> None:
-    await application.bot.set_my_commands(
-        [
-            BotCommand("start", "Приветствие"),
-            BotCommand("help", "Список команд"),
-            BotCommand("add", "Добавить приём пищи"),
-            BotCommand("today", "Записи за сегодня"),
-            BotCommand("cancel", "Отменить шаг в /add"),
-        ]
-    )
+    commands = [
+        BotCommand("start", "Приветствие"),
+        BotCommand("help", "Список команд"),
+        BotCommand("add", "Добавить приём пищи"),
+        BotCommand("today", "Записи за сегодня"),
+        BotCommand("cancel", "Отменить шаг в /add"),
+    ]
+    url = _webapp_url()
+    if url:
+        commands.append(BotCommand("app", "Открыть дневник"))
+        # Кнопка слева от поля ввода — основной вход в мини-апп.
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="Дневник", web_app=WebAppInfo(url=url))
+        )
+    await application.bot.set_my_commands(commands)
 
 
 def main() -> None:
@@ -732,6 +783,7 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("app", app_cmd))
     app.add_handler(CommandHandler("today", today))
     app.add_handler(conv)
 

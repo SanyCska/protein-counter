@@ -10,5 +10,20 @@ services:
     volumes:
       - bot-data:/app/data
 
+  api:
+    build: .
+    image: protein-counter-bot:latest
+    restart: unless-stopped
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    environment:
+      PROTEIN_DB_PATH: /app/data/protein.sqlite3
+    ports:
+      - "8000:8000"
+    volumes:
+      # Та же база, что у бота: блюда из бота сразу видны в мини-аппе.
+      - bot-data:/app/data
+
 volumes:
   bot-data:

@@ -8,7 +8,8 @@ ENV PYTHONUNBUFFERED=1 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py ai_protein.py storage.py .
+COPY bot.py ai_protein.py storage.py ./
+COPY api ./api
 
 RUN mkdir -p /app/data
 
