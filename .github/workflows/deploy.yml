@@ -77,6 +77,8 @@ jobs:
               echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}"
               echo "TZ=${{ secrets.TZ }}"
               echo "PROTEIN_DB_PATH=/app/data/protein.sqlite3"
+              echo "WEBAPP_URL=${{ secrets.WEBAPP_URL }}"
+              echo "WEBAPP_ORIGINS=${{ secrets.WEBAPP_ORIGINS }}"
             } > .env
             chmod 600 .env
             docker compose up -d --build --remove-orphans
