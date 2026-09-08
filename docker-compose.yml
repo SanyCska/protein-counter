@@ -1,3 +1,10 @@
+# Прод-стек в /root/protein на сервере ботов. Файл кладётся туда деплоем
+# (workflow deploy.yml), значения ${...} — из /root/protein/.env, который тот же
+# деплой генерирует из GitHub Secrets; вручную не редактировать.
+#
+# Наружу торчит только caddy (80/443). API слушает 127.0.0.1:8000 — для дебага
+# по SSH. Сервис web деплоится из репозитория protein_web и здесь только описан.
+
 services:
   bot:
     build: .
@@ -20,10 +27,35 @@ services:
     environment:
       PROTEIN_DB_PATH: /app/data/protein.sqlite3
     ports:
-      - "8000:8000"
+      # Наружу не публикуем: запросы приходят через caddy. 127.0.0.1 — для дебага.
+      - "127.0.0.1:8000:8000"
     volumes:
       # Та же база, что у бота: блюда из бота сразу видны в мини-аппе.
       - bot-data:/app/data
 
+  web:
+    # Собирается и публикуется workflow'ом репозитория protein_web; здесь только
+    # описан, чтобы деплой фронта мог сделать `docker compose pull web`.
+    image: ghcr.io/sanycska/protein-web:${WEB_TAG:-latest}
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    # Намеренно без depends_on: web — при первом деплое образа фронта ещё нет
+    # в GHCR. Пока web не поднят, caddy отдаёт 502, это ожидаемо.
+    environment:
+      MINIAPP_HOST: ${MINIAPP_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Выданные сертификаты: без volume каждый рестарт шёл бы за новым.
+      - caddy-data:/data
+      - caddy-config:/config
+
 volumes:
   bot-data:
+  caddy-data:
+  caddy-config:

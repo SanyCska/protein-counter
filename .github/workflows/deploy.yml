@@ -71,14 +71,36 @@ jobs:
             set -e
             cd "${{ secrets.DEPLOY_PATH }}"
             umask 077
+
+            WEBAPP_URL='${{ secrets.WEBAPP_URL }}'
+            WEBAPP_ORIGINS='${{ secrets.WEBAPP_ORIGINS }}'
+            # Caddy нужен голый хост без схемы и пути — выводим его из того же секрета,
+            # чтобы адрес мини-аппа жил в одном месте.
+            MINIAPP_HOST="${WEBAPP_URL#https://}"
+            MINIAPP_HOST="${MINIAPP_HOST%%/*}"
+            # Фронт и API на одном origin, CORS фактически не нужен, но если
+            # страницу откроют напрямую — пусть разрешён тот же адрес.
+            [ -n "$WEBAPP_ORIGINS" ] || WEBAPP_ORIGINS="$WEBAPP_URL"
+
             {
               echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}"
               echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
               echo "OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}"
               echo "TZ=${{ secrets.TZ }}"
               echo "PROTEIN_DB_PATH=/app/data/protein.sqlite3"
-              echo "WEBAPP_URL=${{ secrets.WEBAPP_URL }}"
-              echo "WEBAPP_ORIGINS=${{ secrets.WEBAPP_ORIGINS }}"
+              echo "WEBAPP_URL=${WEBAPP_URL}"
+              echo "WEBAPP_ORIGINS=${WEBAPP_ORIGINS}"
+              echo "MINIAPP_HOST=${MINIAPP_HOST}"
             } > .env
             chmod 600 .env
-            docker compose up -d --build --remove-orphans
+
+            # Явный список сервисов: web приезжает из GHCR деплоем protein_web,
+            # и до первой сборки фронта его образа ещё не существует.
+            docker compose up -d --build --remove-orphans bot api
+
+            if [ -n "$MINIAPP_HOST" ]; then
+              docker compose up -d caddy
+              echo "Мини-апп: https://${MINIAPP_HOST}"
+            else
+              echo "WEBAPP_URL не задан — TLS-прокси и мини-апп не поднимаем"
+            fi

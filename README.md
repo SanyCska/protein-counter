@@ -42,14 +42,18 @@ APP_ENV=dev .venv/bin/uvicorn api.main:app --reload --port 8000
 
 ## Деплой
 
-```bash
-docker compose up -d --build
-```
+Пуш в `main` — и GitHub Actions собирает стек на сервере. Наружу торчит только Caddy:
+он держит TLS, отдаёт `/api` бэкенду, остальное — фронту. Адрес мини-аппа берётся
+из `WEBAPP_URL`; домен покупать не нужно, подойдёт имя вида `109-71-246-174.sslip.io`.
+Фронтенд деплоится своим воркфлоу из [protein_web](https://github.com/SanyCska/protein_web).
 
-Поднимаются два сервиса из одного образа — `bot` и `api` — с общим volume для базы.
-API слушает 8000; наружу его нужно вывести по HTTPS (Telegram не открывает мини-аппы по http).
-Фронтенд собирается отдельно и раздаётся статикой; его адрес кладётся в `WEBAPP_URL`,
-чтобы бот показал кнопку.
+Подробности, секреты и порядок первого запуска — [DEPLOY.md](DEPLOY.md).
+
+Локально стек поднимается так же:
+
+```bash
+docker compose up -d --build bot api
+```
 
 ## Структура
 
@@ -69,7 +73,8 @@ api/
   nutrition/      справочники: нутриенты, нормы, MET, источники
   routers/        HTTP-ручки
 
-tests/            89 тестов
+deploy/           Caddyfile для TLS перед стеком
+tests/            112 тестов
 docs/             дизайн-документ
 ```
 
@@ -99,6 +104,7 @@ docs/             дизайн-документ
 | `OPENAI_MODEL` | нет | по умолчанию `gpt-4o-mini` |
 | `TZ` | нет | какой день считать сегодняшним, по умолчанию UTC |
 | `PROTEIN_DB_PATH` | нет | путь к SQLite |
-| `WEBAPP_URL` | для мини-аппа | https-адрес фронтенда; без него кнопки нет |
-| `WEBAPP_ORIGINS` | для прода | разрешённые origin'ы для CORS |
+| `WEBAPP_URL` | для мини-аппа | https-адрес мини-аппа; без него нет ни кнопки, ни TLS-прокси |
+| `MINIAPP_HOST` | в проде | хост для Caddy, деплой выводит его из `WEBAPP_URL` |
+| `WEBAPP_ORIGINS` | нет | разрешённые origin'ы для CORS; по умолчанию берётся `WEBAPP_URL` |
 | `APP_ENV` | нет | `dev` включает заголовок `X-Dev-User-Id` |
