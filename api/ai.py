@@ -57,6 +57,14 @@ class AiUnavailable(RuntimeError):
     """OpenAI не настроен или недоступен."""
 
 
+class AiBadInput(ValueError):
+    """Клиент не дал ни текста, ни фото — модель тут ни при чём."""
+
+
+#: Верхняя граница веса ингредиента — согласована с MealItemIn.grams.
+MAX_ITEM_GRAMS = 5000.0
+
+
 def client() -> OpenAI:
     key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if not key:
@@ -73,7 +81,9 @@ def parse_meal(
 ) -> dict:
     """Разобрать блюдо. Бросает AiUnavailable, если модель недоступна или ответила мусором."""
     if not text.strip() and not image_base64:
-        raise AiUnavailable("Нужен текст или фото блюда")
+        raise AiBadInput("Нужен текст или фото блюда")
+    if image_base64 and not image_base64.startswith("data:image/"):
+        raise AiBadInput("Фото ожидается как data URL: data:image/...;base64,...")
 
     api = openai_client or client()
     user_text = text.strip() or "Определи блюдо по фото."
@@ -99,6 +109,8 @@ def parse_meal(
         logger.exception("OpenAI request failed")
         raise AiUnavailable(f"Модель недоступна: {exc}") from exc
 
+    if not response.choices:
+        raise AiUnavailable("Модель вернула пустой ответ")
     raw = (response.choices[0].message.content or "").strip()
     try:
         payload = _parse_json_loose(raw)
@@ -117,7 +129,7 @@ def normalize(payload: dict, *, fallback_name: str) -> dict:
         name = str(raw_item.get("name") or "").strip()
         if not name:
             continue
-        grams = _positive(raw_item.get("grams"))
+        grams = min(_positive(raw_item.get("grams")), MAX_ITEM_GRAMS)
         per100_raw = raw_item.get("per100")
         per100_raw = per100_raw if isinstance(per100_raw, dict) else {}
         per100: dict[str, float] = {

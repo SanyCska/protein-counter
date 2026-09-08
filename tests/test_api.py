@@ -54,6 +54,17 @@ class TestProfile:
         assert client.put("/api/profile", json={"age": 500}).status_code == 422
         assert client.put("/api/profile", json={"activity": 5}).status_code == 422
 
+    def test_body_fat_can_be_cleared(self, client):
+        client.put("/api/profile", json={"body_fat_pct": 18})
+        assert client.get("/api/profile").json()["body_fat_pct"] == 18
+        client.put("/api/profile", json={"body_fat_pct": None})
+        assert client.get("/api/profile").json()["body_fat_pct"] is None
+
+    def test_omitted_field_is_not_touched(self, client):
+        client.put("/api/profile", json={"body_fat_pct": 18})
+        client.put("/api/profile", json={"weight_kg": 80})
+        assert client.get("/api/profile").json()["body_fat_pct"] == 18
+
     def test_profile_persists_between_requests(self, client):
         client.put("/api/profile", json={"weight_kg": 84.2})
         assert client.get("/api/profile").json()["weight_kg"] == 84.2
@@ -328,3 +339,151 @@ class TestAi:
             "/api/ai/parse", json={"text": "", "image_base64": "x" * (13 * 1024 * 1024)}
         )
         assert response.status_code == 413
+
+
+ITEMS = [
+    {"name": "Яйцо", "grams": 100, "per100": {"calories_kcal": 155, "protein_g": 13, "iron": 1.2}},
+    {"name": "Сыр", "grams": 50, "per100": {"calories_kcal": 350, "protein_g": 25, "calcium": 700}},
+]
+
+
+class TestMealPatchSemantics:
+    def test_other_user_cannot_strip_items_via_delete(self, client):
+        meal = add_meal(client, items=ITEMS)
+        assert len(meal["items"]) == 2
+        client.headers["X-Dev-User-Id"] = "999"
+        assert client.delete(f"/api/meals/{meal['id']}").status_code == 404
+        client.headers["X-Dev-User-Id"] = "424242"
+        assert len(client.get(f"/api/meals/{meal['id']}").json()["items"]) == 2
+
+    def test_empty_day_rejected(self, client):
+        meal = add_meal(client)
+        assert client.patch(f"/api/meals/{meal['id']}", json={"day": ""}).status_code == 422
+        assert client.patch(f"/api/meals/{meal['id']}", json={"day": "2026-13-40"}).status_code == 400
+
+    def test_empty_items_removes_composition_but_keeps_totals(self, client):
+        meal = add_meal(client, items=ITEMS)
+        updated = client.patch(f"/api/meals/{meal['id']}", json={"items": []}).json()
+        assert updated["items"] == []
+        assert updated["calories_kcal"] == pytest.approx(155 + 175)
+        assert updated["portion_g"] == pytest.approx(150)
+
+    def test_items_override_explicit_totals_like_on_create(self, client):
+        meal = add_meal(client, items=ITEMS)
+        updated = client.patch(
+            f"/api/meals/{meal['id']}", json={"items": ITEMS, "calories_kcal": 1}
+        ).json()
+        assert updated["calories_kcal"] == pytest.approx(330)
+
+    def test_null_clears_nullable_fields(self, client):
+        meal = add_meal(client, ingredients="яйца, сыр", portion_g=150)
+        updated = client.patch(
+            f"/api/meals/{meal['id']}", json={"eaten_at": None, "ingredients": None}
+        ).json()
+        assert updated["eaten_at"] is None
+        assert updated["ingredients"] is None
+
+    def test_null_does_not_wipe_required_fields(self, client):
+        meal = add_meal(client)
+        updated = client.patch(f"/api/meals/{meal['id']}", json={"name": None}).json()
+        assert updated["name"] == "Обед"
+
+    def test_bad_time_rejected(self, client):
+        meal = add_meal(client)
+        assert client.patch(f"/api/meals/{meal['id']}", json={"eaten_at": "zzzzz"}).status_code == 422
+        assert client.patch(f"/api/meals/{meal['id']}", json={"eaten_at": "9:30"}).status_code == 422
+        assert client.patch(f"/api/meals/{meal['id']}", json={"eaten_at": "09:30"}).status_code == 200
+
+
+class TestWorkoutPatchSemantics:
+    def test_null_clears_note_and_time(self, client):
+        created = client.post(
+            f"/api/diary/{DAY}/workouts",
+            json={"kind": "swimming", "minutes": 45, "note": "бассейн", "done_at": "07:30"},
+        ).json()
+        updated = client.patch(
+            f"/api/workouts/{created['id']}", json={"note": None, "done_at": None}
+        ).json()
+        assert updated["note"] is None
+        assert updated["done_at"] is None
+
+    def test_bad_time_rejected(self, client):
+        response = client.post(
+            f"/api/diary/{DAY}/workouts", json={"kind": "swimming", "minutes": 45, "done_at": "25:99"}
+        )
+        assert response.status_code == 422
+
+
+class TestSupplementUnits:
+    def test_latin_units_are_normalized(self, client):
+        created = client.post(
+            "/api/supplements",
+            json={"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "mg"},
+        ).json()
+        assert created["unit"] == "мг"
+        report = client.get(f"/api/report/day/{DAY}").json()
+        magnesium = next(r for r in report["micros"] if r["key"] == "magnesium")
+        assert magnesium["value"] == pytest.approx(400)
+
+    def test_vitamin_d_in_iu_counts(self, client):
+        client.post(
+            "/api/supplements",
+            json={"name": "D3", "nutrient_key": "vit_d", "dose": 2000, "unit": "IU"},
+        )
+        report = client.get(f"/api/report/day/{DAY}").json()
+        vit_d = next(r for r in report["micros"] if r["key"] == "vit_d")
+        assert vit_d["value"] == pytest.approx(2000)
+
+    def test_unknown_unit_and_nutrient_rejected(self, client):
+        base = {"name": "X", "dose": 1}
+        assert client.post("/api/supplements", json={**base, "unit": "шт"}).status_code == 422
+        assert (
+            client.post("/api/supplements", json={**base, "unit": "мг", "nutrient_key": "unobtainium"}).status_code
+            == 422
+        )
+
+    def test_nutrient_key_can_be_cleared(self, client):
+        created = client.post(
+            "/api/supplements",
+            json={"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "мг"},
+        ).json()
+        updated = client.patch(f"/api/supplements/{created['id']}", json={"nutrient_key": None}).json()
+        assert updated["nutrient_key"] is None
+
+
+class TestProgressDeltas:
+    def test_no_previous_data_means_no_delta(self, client):
+        add_meal(client)
+        data = client.get(f"/api/progress?range=week&end={DAY}").json()
+        tile = next(t for t in data["tiles"] if t["key"] == "avg_calories")
+        assert tile["delta"] is None
+        assert "нет данных" in tile["hint"]
+
+    def test_delta_against_previous_week(self, client):
+        client.post("/api/diary/2026-08-01/meals", json={"name": "Ранее", "calories_kcal": 400, "protein_g": 10})
+        add_meal(client)
+        data = client.get(f"/api/progress?range=week&end={DAY}").json()
+        tile = next(t for t in data["tiles"] if t["key"] == "avg_calories")
+        assert tile["delta"] == 240
+
+
+class TestAiInput:
+    def test_empty_text_is_client_error(self, client, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        assert client.post("/api/ai/parse", json={"text": "   "}).status_code == 400
+
+    def test_raw_base64_without_data_url_is_client_error(self, client, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        response = client.post("/api/ai/parse", json={"text": "", "image_base64": "iVBORw0KGgo="})
+        assert response.status_code == 400
+
+
+class TestConcurrentFirstOpen:
+    def test_parallel_first_requests_create_one_profile(self, client):
+        """Первое открытие мини-аппа шлёт профиль, день и полосу недели разом."""
+        import concurrent.futures as futures
+
+        paths = [f"/api/diary/{DAY}", "/api/profile", f"/api/diary/{DAY}/week"] * 4
+        with futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
+            codes = [r.status_code for r in pool.map(lambda p: client.get(p), paths)]
+        assert codes == [200] * len(paths)

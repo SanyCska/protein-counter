@@ -36,6 +36,8 @@ class ProteinStore:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
+        # Состав блюда (meal_items, создаётся API) должен удаляться вместе с записью.
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
             conn.commit()

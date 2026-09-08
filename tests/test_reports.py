@@ -40,8 +40,12 @@ class TestUnitConversion:
     def test_g_to_mg(self):
         assert reports.convert_dose(1.5, "г", "мг") == pytest.approx(1500)
 
+    def test_iu_converts_for_vitamin_d(self):
+        assert reports.convert_dose(2000, "МЕ", "мкг") == pytest.approx(50)
+        assert reports.convert_dose(25, "мкг", "МЕ") == pytest.approx(1000)
+
     def test_incompatible_units_return_none(self):
-        assert reports.convert_dose(2000, "МЕ", "мкг") is None
+        assert reports.convert_dose(1, "шт", "мг") is None
 
 
 class TestSupplements:

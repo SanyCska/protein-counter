@@ -24,7 +24,7 @@ def read_profile(user: TelegramUser = Depends(current_user)) -> dict:
 def write_profile(
     payload: ProfileIn, user: TelegramUser = Depends(current_user)
 ) -> dict:
-    profile = repo.update_profile(user.id, payload.model_dump(exclude_none=True))
+    profile = repo.update_profile(user.id, payload.model_dump(exclude_unset=True))
     return {**profile, "norms": repo.norms_for(profile)}
 
 

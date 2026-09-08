@@ -112,8 +112,11 @@ def patch_meal(
     meal_id: int, payload: MealPatch, user: TelegramUser = Depends(current_user)
 ) -> dict:
     patch = payload.model_dump(exclude_unset=True)
-    if "day" in patch and patch["day"]:
-        patch["day"] = parse_day(patch["day"]).isoformat()
+    if "day" in patch:
+        if patch["day"] is None:
+            del patch["day"]
+        else:
+            patch["day"] = parse_day(patch["day"]).isoformat()
     meal = repo.update_meal(user.id, meal_id, patch)
     if meal is None:
         raise not_found("Блюдо")

@@ -75,16 +75,24 @@ def progress(
         norms=norms,
     )
 
+    # Пустой прошлый период — не «0 ккал», а отсутствие данных: иначе плитка
+    # покажет фиктивный прирост на всю среднюю калорийность.
+    previous_summary = (
+        {
+            "avg_calories": previous["avg_calories"],
+            "macro_days": next(
+                (t["value"] for t in previous["tiles"] if t["key"] == "macro_days"), 0
+            ),
+        }
+        if any(previous["calories"])
+        else None
+    )
+
     current = reports.build_progress(
         days=days,
         meals=repo.meals_for_range(user.id, days[0], days[-1]),
         workouts=repo.workouts_for_range(user.id, days[0], days[-1]),
         norms=norms,
-        previous={
-            "avg_calories": previous["avg_calories"],
-            "macro_days": next(
-                (t["value"] for t in previous["tiles"] if t["key"] == "macro_days"), 0
-            ),
-        },
+        previous=previous_summary,
     )
     return {"range": range, "start": days[0], "end": days[-1], **current}

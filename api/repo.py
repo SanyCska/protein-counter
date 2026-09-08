@@ -36,9 +36,12 @@ def get_profile(user_id: int, *, first_name: str | None = None) -> dict:
             "SELECT * FROM user_profile WHERE user_id = ?", (user_id,)
         ).fetchone()
         if row is None:
+            # OR IGNORE, а не голый INSERT: при первом открытии мини-аппа фронт
+            # шлёт несколько запросов разом, и все они видят пустой профиль —
+            # второй вставке иначе прилетает UNIQUE constraint failed.
             conn.execute(
                 """
-                INSERT INTO user_profile
+                INSERT OR IGNORE INTO user_profile
                     (user_id, sex, age, height_cm, weight_kg, activity, body_fat_pct, goal, first_name, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -69,8 +72,14 @@ def get_profile(user_id: int, *, first_name: str | None = None) -> dict:
     return profile
 
 
+#: Единственное необязательное поле профиля — его можно сбросить, передав null.
+NULLABLE_PROFILE_FIELDS = frozenset({"body_fat_pct"})
+
+
 def update_profile(user_id: int, patch: dict) -> dict:
-    fields = {k: v for k, v in patch.items() if v is not None}
+    fields = {
+        k: v for k, v in patch.items() if v is not None or k in NULLABLE_PROFILE_FIELDS
+    }
     get_profile(user_id)  # гарантируем, что строка существует
     if fields:
         assignments = ", ".join(f"{k} = ?" for k in fields)
@@ -245,24 +254,39 @@ def get_meal(user_id: int, meal_id: int) -> dict | None:
         return _meal_row(row, _items_for(conn, meal_id))
 
 
+#: Поля блюда, которые PATCH может сбросить в NULL.
+NULLABLE_MEAL_FIELDS = frozenset({"eaten_at", "ingredients", "portion_g"})
+
+
 def update_meal(user_id: int, meal_id: int, patch: dict) -> dict | None:
     current = get_meal(user_id, meal_id)
     if current is None:
         return None
 
     items = patch.get("items")
-    data = {k: v for k, v in patch.items() if v is not None and k != "items"}
+    # Роутер отдаёт только явно переданные поля (exclude_unset), поэтому None здесь —
+    # осознанное «очистить». Разрешаем это только для колонок, допускающих NULL.
+    data = {
+        k: v
+        for k, v in patch.items()
+        if k != "items" and (v is not None or k in NULLABLE_MEAL_FIELDS)
+    }
 
-    if items is not None:
+    if items:
+        # Состав — источник истины для итогов, как и при создании блюда.
         computed = totals_from_items(items)
-        # Явно переданные значения побеждают пересчёт: пользователь мог поправить итог руками.
-        data.setdefault("calories_kcal", computed["calories_kcal"])
-        data.setdefault("protein_g", computed["protein_g"])
-        data.setdefault("fat_g", computed["fat_g"])
-        data.setdefault("carbs_g", computed["carbs_g"])
-        data.setdefault("fiber_g", computed["fiber_g"])
-        data.setdefault("micros", computed["micros"])
-        data.setdefault("portion_g", computed["portion_g"])
+        data.update(
+            {
+                "calories_kcal": computed["calories_kcal"],
+                "protein_g": computed["protein_g"],
+                "fat_g": computed["fat_g"],
+                "carbs_g": computed["carbs_g"],
+                "fiber_g": computed["fiber_g"],
+                "micros": computed["micros"],
+                "portion_g": data.get("portion_g") or computed["portion_g"],
+            }
+        )
+    # Пустой список items = «убрать разбор по ингредиентам», итоги при этом не трогаем.
 
     column_map = {
         "name": "food_name",
@@ -300,11 +324,15 @@ def update_meal(user_id: int, meal_id: int, patch: dict) -> dict | None:
 
 def delete_meal(user_id: int, meal_id: int) -> bool:
     with connect() as conn:
-        conn.execute("DELETE FROM meal_items WHERE entry_id = ?", (meal_id,))
+        # Сначала владельческая проверка — иначе чужой состав можно стереть, зная id.
         cur = conn.execute(
             "DELETE FROM protein_entries WHERE id = ? AND user_id = ?", (meal_id, user_id)
         )
-        return cur.rowcount > 0
+        if cur.rowcount == 0:
+            return False
+        # ON DELETE CASCADE уже сработал; явный DELETE — страховка на случай выключенного pragma.
+        conn.execute("DELETE FROM meal_items WHERE entry_id = ?", (meal_id,))
+        return True
 
 
 def meals_for_day(user_id: int, day: str) -> list[dict]:
@@ -386,8 +414,8 @@ def update_workout(user_id: int, workout_id: int, patch: dict, weight_kg: float)
                 kind,
                 float(minutes),
                 float(kcal),
-                patch.get("note") if patch.get("note") is not None else row["note"],
-                patch.get("done_at") if patch.get("done_at") is not None else row["done_at"],
+                patch["note"] if "note" in patch else row["note"],
+                patch["done_at"] if "done_at" in patch else row["done_at"],
                 workout_id,
                 user_id,
             ),
@@ -525,8 +553,14 @@ def add_supplement(user_id: int, payload: dict) -> dict:
     return _supplement_row(row)
 
 
+#: Поля добавки, которые PATCH может сбросить в NULL.
+NULLABLE_SUPPLEMENT_FIELDS = frozenset({"nutrient_key", "when_label"})
+
+
 def update_supplement(user_id: int, supplement_id: int, patch: dict) -> dict | None:
-    fields = {k: v for k, v in patch.items() if v is not None}
+    fields = {
+        k: v for k, v in patch.items() if v is not None or k in NULLABLE_SUPPLEMENT_FIELDS
+    }
     if "active" in fields:
         fields["active"] = 1 if fields["active"] else 0
     with connect() as conn:

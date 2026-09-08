@@ -2,15 +2,43 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+from .nutrition.catalog import KEYS
 
 Sex = Literal["m", "f"]
 Goal = Literal["lose", "maintain", "gain"]
 MealType = Literal["breakfast", "lunch", "dinner", "snack", "other"]
 Frequency = Literal["daily", "every_other_day", "course"]
 Range = Literal["week", "month"]
+NutrientKey = Literal[KEYS]
+
+#: Время внутри дня — "HH:MM"; иначе сортировка ленты по строке ломается.
+TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+_UNIT_ALIASES = {
+    "g": "г",
+    "mg": "мг",
+    "mcg": "мкг",
+    "µg": "мкг",
+    "ug": "мкг",
+    "iu": "МЕ",
+    "ме": "МЕ",
+    "ед": "МЕ",
+}
+
+
+def _normalize_unit(value: object) -> object:
+    """Латинские единицы (mg, mcg, IU) приводим к кириллическим из справочника."""
+    if not isinstance(value, str):
+        return value
+    cleaned = value.strip()
+    return _UNIT_ALIASES.get(cleaned.lower(), cleaned)
+
+
+DoseUnit = Annotated[Literal["г", "мг", "мкг", "МЕ"], BeforeValidator(_normalize_unit)]
 
 
 class Micros(BaseModel):
@@ -39,7 +67,7 @@ class MealIn(BaseModel):
     fiber_g: float | None = Field(default=None, ge=0, le=200)
     portion_g: float | None = Field(default=None, ge=0, le=10000)
     meal_type: MealType = "other"
-    eaten_at: str | None = Field(default=None, max_length=5, description="HH:MM")
+    eaten_at: str | None = Field(default=None, pattern=TIME_PATTERN, description="HH:MM")
     ingredients: str | None = Field(default=None, max_length=4000)
     micros: dict[str, float] = Field(default_factory=dict)
     items: list[MealItemIn] = Field(default_factory=list)
@@ -57,11 +85,11 @@ class MealPatch(BaseModel):
     fiber_g: float | None = Field(default=None, ge=0, le=200)
     portion_g: float | None = Field(default=None, ge=0, le=10000)
     meal_type: MealType | None = None
-    eaten_at: str | None = Field(default=None, max_length=5)
+    eaten_at: str | None = Field(default=None, pattern=TIME_PATTERN)
     ingredients: str | None = Field(default=None, max_length=4000)
     micros: dict[str, float] | None = None
     items: list[MealItemIn] | None = None
-    day: str | None = Field(default=None, description="перенести блюдо на другой день")
+    day: str | None = Field(default=None, min_length=10, max_length=10, description="перенести блюдо на другой день")
 
 
 class MealOut(BaseModel):
@@ -87,7 +115,7 @@ class WorkoutIn(BaseModel):
     minutes: float = Field(ge=1, le=600)
     kcal: float | None = Field(default=None, ge=0, le=10000)
     note: str | None = Field(default=None, max_length=200)
-    done_at: str | None = Field(default=None, max_length=5)
+    done_at: str | None = Field(default=None, pattern=TIME_PATTERN)
     save_as_template: bool = False
     template_name: str | None = Field(default=None, max_length=60)
 
@@ -97,7 +125,7 @@ class WorkoutPatch(BaseModel):
     minutes: float | None = Field(default=None, ge=1, le=600)
     kcal: float | None = Field(default=None, ge=0, le=10000)
     note: str | None = Field(default=None, max_length=200)
-    done_at: str | None = Field(default=None, max_length=5)
+    done_at: str | None = Field(default=None, pattern=TIME_PATTERN)
 
 
 class WorkoutOut(BaseModel):
@@ -127,9 +155,9 @@ class WorkoutTemplateOut(WorkoutTemplateIn):
 
 class SupplementIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    nutrient_key: str | None = None
+    nutrient_key: NutrientKey | None = None
     dose: float = Field(ge=0, le=100000)
-    unit: str = Field(min_length=1, max_length=10)
+    unit: DoseUnit
     when_label: str | None = Field(default=None, max_length=40)
     frequency: Frequency = "daily"
     active: bool = True
@@ -137,9 +165,9 @@ class SupplementIn(BaseModel):
 
 class SupplementPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
-    nutrient_key: str | None = None
+    nutrient_key: NutrientKey | None = None
     dose: float | None = Field(default=None, ge=0, le=100000)
-    unit: str | None = Field(default=None, min_length=1, max_length=10)
+    unit: DoseUnit | None = None
     when_label: str | None = Field(default=None, max_length=40)
     frequency: Frequency | None = None
     active: bool | None = None
@@ -194,7 +222,7 @@ class AiParseIn(BaseModel):
 
 class AiParsedItem(BaseModel):
     name: str
-    grams: float
+    grams: float = Field(ge=0, le=5000)
     per100: dict[str, float]
 
 

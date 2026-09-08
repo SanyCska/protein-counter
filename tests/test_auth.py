@@ -75,3 +75,17 @@ class TestEndpointAuth:
     def test_dev_header_ignored_outside_dev(self, client, monkeypatch):
         monkeypatch.setenv("APP_ENV", "production")
         assert client.get("/api/profile").status_code == 401
+
+    def test_non_hex_hash_rejected_not_crashed(self):
+        # compare_digest на не-ASCII строках бросает TypeError — должен быть 401, а не 500.
+        with pytest.raises(AuthError, match="hash"):
+            verify_init_data("auth_date=1&user=%7B%7D&hash=%C3%A9", TEST_BOT_TOKEN)
+
+    def test_missing_auth_date_rejected(self):
+        # Корректно подписанная initData без auth_date — TTL проверить нечем, отклоняем.
+        fields = {"query_id": "AAF", "user": json.dumps({"id": 777})}
+        check = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+        secret = hmac.new(b"WebAppData", TEST_BOT_TOKEN.encode(), hashlib.sha256).digest()
+        fields["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        with pytest.raises(AuthError, match="auth_date"):
+            verify_init_data(urlencode(fields), TEST_BOT_TOKEN)

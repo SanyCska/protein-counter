@@ -53,6 +53,9 @@ def verify_init_data(init_data: str, bot_token: str) -> dict[str, str]:
     received_hash = fields.pop("hash", None)
     if not received_hash:
         raise AuthError("В initData нет hash")
+    # hex-строка фиксированной длины; иначе compare_digest на не-ASCII бросит TypeError.
+    if len(received_hash) != 64 or not all(c in "0123456789abcdef" for c in received_hash.lower()):
+        raise AuthError("Некорректный hash в initData")
 
     data_check_string = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
@@ -60,17 +63,18 @@ def verify_init_data(init_data: str, bot_token: str) -> dict[str, str]:
         secret_key, data_check_string.encode(), hashlib.sha256
     ).hexdigest()
 
-    if not hmac.compare_digest(expected, received_hash):
+    if not hmac.compare_digest(expected.encode(), received_hash.lower().encode()):
         raise AuthError("Подпись initData не совпала")
 
     auth_date = fields.get("auth_date")
-    if auth_date:
-        try:
-            age = time.time() - int(auth_date)
-        except ValueError:
-            raise AuthError("Некорректный auth_date") from None
-        if age > MAX_AUTH_AGE_SECONDS:
-            raise AuthError("initData устарела, переоткройте приложение")
+    if not auth_date:
+        raise AuthError("В initData нет auth_date")
+    try:
+        age = time.time() - int(auth_date)
+    except ValueError:
+        raise AuthError("Некорректный auth_date") from None
+    if age > MAX_AUTH_AGE_SECONDS:
+        raise AuthError("initData устарела, переоткройте приложение")
 
     return fields
 
