@@ -487,3 +487,415 @@ class TestConcurrentFirstOpen:
         with futures.ThreadPoolExecutor(max_workers=len(paths)) as pool:
             codes = [r.status_code for r in pool.map(lambda p: client.get(p), paths)]
         assert codes == [200] * len(paths)
+
+
+class FakeChoice:
+    def __init__(self, content: str) -> None:
+        self.message = type("Msg", (), {"content": content})()
+
+
+class FakeCompletions:
+    """Минимальный двойник OpenAI: отдаёт заранее заданные ответы по очереди."""
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+        self.prompts: list[str] = []
+
+    def create(self, **kwargs):
+        self.prompts.append(kwargs["messages"][-1]["content"])
+        reply = self.replies.pop(0) if self.replies else self.replies_default
+        if isinstance(reply, Exception):
+            raise reply
+        return type("Resp", (), {"choices": [FakeChoice(reply)]})()
+
+    replies_default = "{}"
+
+
+class FakeOpenAI:
+    def __init__(self, replies: list[str]) -> None:
+        self.chat = type("Chat", (), {"completions": FakeCompletions(replies)})()
+
+    @property
+    def prompts(self) -> list[str]:
+        return self.chat.completions.prompts
+
+
+PRODUCT_REPLY = (
+    '{"confidence": "medium", "comment": "по составу творога",'
+    ' "per100": {"calcium": 120, "b12": 0.4, "fiber_g": 0.5, "выдумка": 5}}'
+)
+
+
+@pytest.fixture
+def fake_ai(monkeypatch):
+    """Подменяет клиента OpenAI, чтобы тесты не ходили в сеть."""
+    created: list[FakeOpenAI] = []
+
+    def factory(replies: list[str]) -> FakeOpenAI:
+        fake = FakeOpenAI(replies)
+        created.append(fake)
+        monkeypatch.setattr("api.ai.client", lambda: fake)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        return fake
+
+    return factory
+
+
+class TestCaloriesOverride:
+    def test_manual_norm_is_returned_and_marked(self, client):
+        auto = client.get("/api/profile").json()["norms"]
+        assert auto["calories_source"] == "computed"
+
+        norms = client.put("/api/profile", json={"calories_override": 2400}).json()["norms"]
+        assert norms["calories"] == 2400
+        assert norms["calories_source"] == "manual"
+        assert norms["calories_computed"] == auto["calories"]
+
+    def test_manual_norm_drives_day_totals(self, client):
+        client.put("/api/profile", json={"calories_override": 2000})
+        add_meal(client, calories_kcal=500, protein_g=10)
+        totals = client.get(f"/api/diary/{DAY}").json()["totals"]
+        assert totals["calories_remaining"] == 1500
+
+    def test_null_returns_to_formula(self, client):
+        client.put("/api/profile", json={"calories_override": 2400})
+        profile = client.put("/api/profile", json={"calories_override": None}).json()
+        assert profile["calories_override"] is None
+        assert profile["norms"]["calories_source"] == "computed"
+
+    def test_absurd_values_rejected(self, client):
+        assert client.put("/api/profile", json={"calories_override": 100}).status_code == 422
+        assert client.put("/api/profile", json={"calories_override": 99999}).status_code == 422
+
+    def test_weight_change_keeps_manual_norm(self, client):
+        client.put("/api/profile", json={"calories_override": 2400})
+        norms = client.put("/api/profile", json={"weight_kg": 90}).json()["norms"]
+        assert norms["calories"] == 2400
+
+
+class TestProductMicroEstimate:
+    def test_estimate_before_saving_scales_to_portion(self, client, fake_ai):
+        fake = fake_ai([PRODUCT_REPLY])
+        result = client.post(
+            "/api/ai/product",
+            json={"name": "Творог 5%", "portion_g": 200, "calories_kcal": 240, "protein_g": 34},
+        ).json()
+        assert result["per100"]["calcium"] == 120
+        assert result["micros"]["calcium"] == 240
+        assert result["fiber_g"] == 1
+        assert "выдумка" not in result["micros"]
+        assert "Творог 5%" in fake.prompts[0] and "240" in fake.prompts[0]
+
+    def test_estimate_without_portion_assumes_100g(self, client, fake_ai):
+        fake_ai([PRODUCT_REPLY])
+        result = client.post("/api/ai/product", json={"name": "Творог"}).json()
+        assert result["portion_g"] == 100
+        assert result["micros"]["calcium"] == 120
+
+    def test_estimate_saves_micros_to_existing_product(self, client, fake_ai):
+        fake_ai([PRODUCT_REPLY])
+        product = client.post(
+            "/api/products", json={"name": "Творог", "protein_g": 34, "portion_g": 200}
+        ).json()
+        assert product["micros"] == {}
+        updated = client.post(f"/api/products/{product['id']}/estimate").json()
+        assert updated["micros"]["calcium"] == 240
+        assert updated["fiber_g"] == 1
+        assert client.get("/api/products").json()[0]["micros"]["calcium"] == 240
+
+    def test_estimate_does_not_touch_known_fiber(self, client, fake_ai):
+        fake_ai([PRODUCT_REPLY])
+        product = client.post(
+            "/api/products", json={"name": "Творог", "protein_g": 34, "fiber_g": 7}
+        ).json()
+        assert client.post(f"/api/products/{product['id']}/estimate").json()["fiber_g"] == 7
+
+    def test_estimate_of_missing_product_is_404(self, client, fake_ai):
+        fake_ai([PRODUCT_REPLY])
+        assert client.post("/api/products/999/estimate").status_code == 404
+
+    def test_estimate_without_key_is_503(self, client, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        product = client.post("/api/products", json={"name": "Творог", "protein_g": 34}).json()
+        assert client.post(f"/api/products/{product['id']}/estimate").status_code == 503
+
+
+class TestProductsBatchEstimate:
+    def test_only_products_without_micros_are_estimated(self, client, fake_ai):
+        fake = fake_ai([PRODUCT_REPLY, PRODUCT_REPLY])
+        client.post("/api/products", json={"name": "Творог", "protein_g": 34})
+        client.post("/api/products", json={"name": "Кефир", "protein_g": 3})
+        client.post(
+            "/api/products", json={"name": "Печень", "protein_g": 20, "micros": {"iron": 6.9}}
+        )
+
+        result = client.post("/api/products/estimate").json()
+        assert len(result["updated"]) == 2
+        assert result["failed"] == 0
+        assert result["remaining"] == 0
+        assert len(fake.prompts) == 2
+        assert {p["name"] for p in result["updated"]} == {"Творог", "Кефир"}
+
+    def test_broken_answer_for_one_product_does_not_break_batch(self, client, fake_ai):
+        fake_ai(["не json", PRODUCT_REPLY])
+        client.post("/api/products", json={"name": "Творог", "protein_g": 34})
+        client.post("/api/products", json={"name": "Кефир", "protein_g": 3})
+
+        result = client.post("/api/products/estimate").json()
+        assert result["failed"] == 1
+        assert len(result["updated"]) == 1
+        assert result["updated"][0]["name"] == "Кефир"
+        # Творог остался без состава и попадёт в следующий запуск.
+        assert result["remaining"] == 1
+        assert result["error"] is None
+
+    def test_nothing_to_do_is_not_an_error(self, client, fake_ai):
+        fake_ai([])
+        result = client.post("/api/products/estimate").json()
+        assert result == {"updated": [], "failed": 0, "remaining": 0, "error": None}
+
+    def test_without_key_batch_is_503(self, client, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        client.post("/api/products", json={"name": "Творог", "protein_g": 34})
+        assert client.post("/api/products/estimate").status_code == 503
+
+
+class TestProductPatch:
+    def test_micros_can_be_edited_by_hand(self, client):
+        product = client.post("/api/products", json={"name": "Творог", "protein_g": 34}).json()
+        updated = client.patch(
+            f"/api/products/{product['id']}", json={"micros": {"calcium": 300, "чушь": 1}}
+        ).json()
+        assert updated["micros"] == {"calcium": 300}
+
+    def test_other_users_product_is_invisible(self, client):
+        product = client.post("/api/products", json={"name": "Творог", "protein_g": 34}).json()
+        client.headers["X-Dev-User-Id"] = "999"
+        assert client.patch(f"/api/products/{product['id']}", json={"name": "Чужое"}).status_code == 404
+        assert client.post(f"/api/products/{product['id']}/estimate").status_code == 404
+
+
+class TestProductDeduplication:
+    def test_same_name_updates_instead_of_duplicating(self, client):
+        client.post(
+            "/api/products",
+            json={"name": "Творог 5%", "protein_g": 34, "calories_kcal": 240, "micros": {"calcium": 240}},
+        )
+        client.post(
+            "/api/products",
+            json={"name": "творог 5%", "protein_g": 36, "calories_kcal": 250},
+        )
+        products = client.get("/api/products").json()
+        assert len(products) == 1
+        assert products[0]["protein_g"] == 36
+        assert products[0]["calories_kcal"] == 250
+        # Состав, добытый раньше, ручная перезапись не стирает.
+        assert products[0]["micros"] == {"calcium": 240}
+
+    def test_new_micros_replace_old_ones(self, client):
+        client.post(
+            "/api/products", json={"name": "Творог", "protein_g": 34, "micros": {"calcium": 240}}
+        )
+        client.post(
+            "/api/products", json={"name": "Творог", "protein_g": 34, "micros": {"calcium": 300}}
+        )
+        assert client.get("/api/products").json()[0]["micros"] == {"calcium": 300}
+
+    def test_saving_a_meal_twice_keeps_one_product(self, client):
+        for _ in range(3):
+            add_meal(client, name="Овсянка", save_as_product=True)
+        assert len(client.get("/api/products").json()) == 1
+
+
+PHOTO = "data:image/jpeg;base64,/9j/test"
+
+LABEL_REPLY = (
+    '{"name": "Творожок ванильный", "portion": 200, "portion_unit": "г",'
+    ' "confidence": "high", "comment": "таблица читается",'
+    ' "per100": {"calories_kcal": 120, "protein_g": 8, "fat_g": 3, "carbs_g": 14,'
+    ' "fiber_g": 0.5, "calcium": 110, "выдумка": 5}}'
+)
+
+SUPPLEMENT_REPLY = (
+    '{"name": "Мультивитамины", "when_label": "утром", "confidence": "medium",'
+    ' "comment": "состав с банки", "items": ['
+    '{"name": "Витамин D3", "nutrient_key": "vit_d", "dose": 2000, "unit": "IU"},'
+    '{"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "mg"},'
+    '{"name": "Коллаген", "nutrient_key": null, "dose": 5, "unit": "g"}]}'
+)
+
+
+class TestLabelPhoto:
+    def test_label_scales_per100_to_portion(self, client, fake_ai):
+        fake_ai([LABEL_REPLY])
+        result = client.post("/api/ai/label", json={"image_base64": PHOTO}).json()
+        assert result["name"] == "Творожок ванильный"
+        assert result["portion_g"] == 200
+        assert result["portion_unit"] == "г"
+        assert result["per100"]["calories_kcal"] == 120
+        assert result["calories_kcal"] == 240
+        assert result["protein_g"] == 16
+        assert result["micros"]["calcium"] == 220
+        assert "выдумка" not in result["micros"]
+
+    def test_fiber_is_kept_in_both_places(self, client, fake_ai):
+        fake_ai([LABEL_REPLY])
+        result = client.post("/api/ai/label", json={"image_base64": PHOTO}).json()
+        assert result["fiber_g"] == 1
+        assert result["micros"]["fiber"] == 1
+
+    def test_drink_label_keeps_millilitres(self, client, fake_ai):
+        fake_ai(['{"name": "Молоко", "portion": 250, "portion_unit": "ml",'
+                 ' "per100": {"calories_kcal": 60, "protein_g": 3}}'])
+        result = client.post("/api/ai/label", json={"image_base64": PHOTO}).json()
+        assert result["portion_unit"] == "мл"
+        assert result["calories_kcal"] == 150
+
+    def test_label_without_portion_falls_back_to_100(self, client, fake_ai):
+        fake_ai(['{"name": "Овсянка", "portion": null, "per100": {"calories_kcal": 370}}'])
+        result = client.post("/api/ai/label", json={"image_base64": PHOTO}).json()
+        assert result["portion_g"] is None
+        assert result["calories_kcal"] == 370
+        assert result["portion_unit"] == "г"
+
+    def test_photo_is_sent_to_the_model(self, client, fake_ai):
+        fake = fake_ai([LABEL_REPLY])
+        client.post("/api/ai/label", json={"image_base64": PHOTO, "text": "творожок"})
+        content = fake.prompts[0]
+        assert content[0]["text"] == "творожок"
+        assert content[1]["image_url"]["url"] == PHOTO
+
+    def test_raw_base64_without_data_url_is_client_error(self, client, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        assert client.post("/api/ai/label", json={"image_base64": "iVBOR"}).status_code == 400
+
+    def test_photo_is_required(self, client):
+        assert client.post("/api/ai/label", json={"text": "творог"}).status_code == 422
+
+    def test_oversized_image_rejected(self, client):
+        response = client.post(
+            "/api/ai/label", json={"image_base64": "x" * (13 * 1024 * 1024)}
+        )
+        assert response.status_code == 413
+
+    def test_without_key_is_503(self, client, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert client.post("/api/ai/label", json={"image_base64": PHOTO}).status_code == 503
+
+
+class TestSupplementLabelPhoto:
+    def test_all_substances_are_returned_with_normalized_units(self, client, fake_ai):
+        fake_ai([SUPPLEMENT_REPLY])
+        result = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()
+        assert result["name"] == "Мультивитамины"
+        assert result["when_label"] == "утром"
+        assert [i["unit"] for i in result["items"]] == ["МЕ", "мг", "г"]
+        assert [i["dose"] for i in result["items"]] == [2000, 400, 5]
+
+    def test_substance_outside_catalog_is_kept_without_key(self, client, fake_ai):
+        fake_ai([SUPPLEMENT_REPLY])
+        result = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()
+        collagen = result["items"][2]
+        assert collagen["name"] == "Коллаген"
+        assert collagen["nutrient_key"] is None
+
+    def test_unknown_key_and_zero_dose_are_dropped(self, client, fake_ai):
+        fake_ai(['{"name": "X", "items": ['
+                 '{"name": "Юникорний", "nutrient_key": "unobtainium", "dose": 5, "unit": "мг"},'
+                 '{"name": "Пустышка", "dose": 0, "unit": "мг"},'
+                 '{"name": "Без имени", "dose": 5, "unit": "мг"}]}'])
+        items = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()["items"]
+        assert [i["name"] for i in items] == ["Юникорний", "Без имени"]
+        assert items[0]["nutrient_key"] is None
+
+    def test_garbage_in_nutrient_key_does_not_break_parsing(self, client, fake_ai):
+        fake_ai(['{"name": "X", "items": ['
+                 '{"name": "Цинк", "nutrient_key": {"key": "zinc"}, "dose": 15, "unit": "мг"}]}'])
+        items = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()["items"]
+        assert items == [{"name": "Цинк", "nutrient_key": None, "dose": 15, "unit": "мг"}]
+
+    def test_unreadable_unit_falls_back_to_mg(self, client, fake_ai):
+        fake_ai('{"name": "X", "items": [{"name": "Цинк", "dose": 15, "unit": "капсул"}]}'.split("\n"))
+        items = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()["items"]
+        assert items[0]["unit"] == "мг"
+
+    def test_without_key_is_503(self, client, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        response = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO})
+        assert response.status_code == 503
+
+
+class TestSupplementsBulk:
+    def test_whole_label_is_saved_at_once(self, client):
+        created = client.post(
+            "/api/supplements/bulk",
+            json={
+                "items": [
+                    {"name": "D3", "nutrient_key": "vit_d", "dose": 2000, "unit": "IU"},
+                    {"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "mg"},
+                ]
+            },
+        )
+        assert created.status_code == 201
+        assert [s["unit"] for s in created.json()] == ["МЕ", "мг"]
+        assert len(client.get("/api/supplements").json()) == 2
+
+    def test_saved_substances_count_in_the_day_report(self, client):
+        client.post(
+            "/api/supplements/bulk",
+            json={"items": [{"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "мг"}]},
+        )
+        report = client.get(f"/api/report/day/{DAY}").json()
+        magnesium = next(r for r in report["micros"] if r["key"] == "magnesium")
+        assert magnesium["value"] == pytest.approx(400)
+
+    def test_empty_list_rejected(self, client):
+        assert client.post("/api/supplements/bulk", json={"items": []}).status_code == 422
+
+    def test_one_bad_item_rejects_the_whole_batch(self, client):
+        response = client.post(
+            "/api/supplements/bulk",
+            json={
+                "items": [
+                    {"name": "Магний", "dose": 400, "unit": "мг"},
+                    {"name": "Ерунда", "dose": 1, "unit": "шт"},
+                ]
+            },
+        )
+        assert response.status_code == 422
+        assert client.get("/api/supplements").json() == []
+
+
+class TestPortionUnits:
+    def test_meal_keeps_millilitres(self, client):
+        meal = add_meal(client, name="Кефир", portion_g=250, portion_unit="мл")
+        assert meal["portion_unit"] == "мл"
+        assert client.get(f"/api/meals/{meal['id']}").json()["portion_unit"] == "мл"
+
+    def test_grams_are_the_default(self, client):
+        assert add_meal(client)["portion_unit"] == "г"
+        product = client.post("/api/products", json={"name": "Творог", "protein_g": 34}).json()
+        assert product["portion_unit"] == "г"
+
+    def test_latin_unit_is_normalized(self, client):
+        assert add_meal(client, portion_g=250, portion_unit="ml")["portion_unit"] == "мл"
+        product = client.post(
+            "/api/products", json={"name": "Сок", "protein_g": 0, "portion_unit": "ml"}
+        ).json()
+        assert product["portion_unit"] == "мл"
+
+    def test_unknown_unit_rejected(self, client):
+        response = client.post(
+            f"/api/diary/{DAY}/meals", json={"name": "X", "protein_g": 1, "portion_unit": "шт"}
+        )
+        assert response.status_code == 422
+
+    def test_unit_travels_into_the_saved_product(self, client):
+        add_meal(client, name="Кефир", portion_g=250, portion_unit="мл", save_as_product=True)
+        assert client.get("/api/products").json()[0]["portion_unit"] == "мл"
+
+    def test_unit_can_be_patched(self, client):
+        meal = add_meal(client, name="Кефир", portion_g=250)
+        assert client.patch(f"/api/meals/{meal['id']}", json={"portion_unit": "мл"}).json()[
+            "portion_unit"
+        ] == "мл"

@@ -35,6 +35,10 @@ KCAL_PER_G_CARBS = 4.0
 class Norms:
     bmr: float
     calories: float
+    #: Что посчитала формула — показываем рядом со своей нормой, чтобы было с чем сравнить.
+    calories_computed: float
+    #: "computed" или "manual" — от этого зависит подпись и кнопка сброса в интерфейсе.
+    calories_source: str
     protein_g: float
     fat_g: float
     carbs_g: float
@@ -47,6 +51,8 @@ class Norms:
         return {
             "bmr": round(self.bmr),
             "calories": round(self.calories),
+            "calories_computed": round(self.calories_computed),
+            "calories_source": self.calories_source,
             "protein_g": round(self.protein_g),
             "fat_g": round(self.fat_g),
             "carbs_g": round(self.carbs_g),
@@ -78,11 +84,17 @@ def compute_norms(
     weight_kg: float,
     activity: str | float,
     goal: str,
+    calories_override: float | None = None,
 ) -> Norms:
     goal = goal if goal in GOALS else "maintain"
     factor = activity_factor(activity)
     bmr = bmr_mifflin(sex=sex, age=age, height_cm=height_cm, weight_kg=weight_kg)
-    calories = bmr * factor * GOAL_FACTOR[goal]
+    computed = bmr * factor * GOAL_FACTOR[goal]
+
+    # Своя норма заменяет только калории: белок и жиры остаются привязаны к весу,
+    # иначе при ручном урезании калорий первым просел бы белок.
+    manual = calories_override is not None and calories_override > 0
+    calories = float(calories_override) if manual else computed
 
     protein_g = GOAL_PROTEIN_PER_KG[goal] * weight_kg
     fat_g = FAT_PER_KG * weight_kg
@@ -93,6 +105,8 @@ def compute_norms(
     return Norms(
         bmr=bmr,
         calories=calories,
+        calories_computed=computed,
+        calories_source="manual" if manual else "computed",
         protein_g=protein_g,
         fat_g=fat_g,
         carbs_g=carbs_g,

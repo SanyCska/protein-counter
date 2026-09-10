@@ -52,6 +52,52 @@ NUTRIENTS: tuple[Nutrient, ...] = (
 BY_KEY: dict[str, Nutrient] = {n.key: n for n in NUTRIENTS}
 KEYS: tuple[str, ...] = tuple(n.key for n in NUTRIENTS)
 
+#: Единицы дозы добавок. Латиницу и разнобой с упаковок приводим к кириллице справочника.
+DOSE_UNITS: tuple[str, ...] = ("г", "мг", "мкг", "МЕ")
+
+_DOSE_ALIASES = {
+    "g": "г",
+    "mg": "мг",
+    "mcg": "мкг",
+    "µg": "мкг",
+    "ug": "мкг",
+    "iu": "МЕ",
+    "ме": "МЕ",
+    "ед": "МЕ",
+}
+
+#: Единицы порции: массу и объём различаем только подписью — плотность мы не знаем.
+PORTION_UNITS: tuple[str, ...] = ("г", "мл")
+
+_PORTION_ALIASES = {
+    "g": "г",
+    "gr": "г",
+    "gram": "г",
+    "grams": "г",
+    "гр": "г",
+    "ml": "мл",
+    "milliliter": "мл",
+    "millilitre": "мл",
+    "мл.": "мл",
+}
+
+
+def normalize_dose_unit(value: object) -> object:
+    """`mg`, `mcg`, `IU` с упаковки → единицы справочника. Незнакомое отдаём как есть:
+    отбраковкой занимается схема, а не этот словарь."""
+    if not isinstance(value, str):
+        return value
+    cleaned = value.strip()
+    return _DOSE_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def normalize_portion_unit(value: object) -> object:
+    """`g`/`ml`/`гр` → `г`/`мл`."""
+    if not isinstance(value, str):
+        return value
+    cleaned = value.strip()
+    return _PORTION_ALIASES.get(cleaned.lower(), cleaned)
+
 
 def rda(key: str, sex: str) -> float:
     """Суточная норма нутриента для пола (`m`/`f`, всё остальное — как мужская)."""

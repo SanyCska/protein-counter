@@ -107,6 +107,7 @@ def migrate() -> None:
             ("fiber_g", "REAL"),
             ("micros_json", "TEXT"),
             ("portion_g", "REAL"),
+            ("portion_unit", "TEXT"),
             ("meal_type", "TEXT"),
             ("eaten_at", "TEXT"),
             ("updated_at", "TEXT"),
@@ -119,6 +120,7 @@ def migrate() -> None:
             ("fiber_g", "REAL"),
             ("micros_json", "TEXT"),
             ("portion_g", "REAL"),
+            ("portion_unit", "TEXT"),
         ):
             _add_column(conn, "saved_products", column, ddl)
 
@@ -152,6 +154,8 @@ def migrate() -> None:
             )
             """
         )
+        # Своя норма калорий вместо расчётной; NULL — считать по формуле.
+        _add_column(conn, "user_profile", "calories_override", "REAL")
 
         conn.execute(
             """

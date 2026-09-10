@@ -72,8 +72,9 @@ def get_profile(user_id: int, *, first_name: str | None = None) -> dict:
     return profile
 
 
-#: Единственное необязательное поле профиля — его можно сбросить, передав null.
-NULLABLE_PROFILE_FIELDS = frozenset({"body_fat_pct"})
+#: Необязательные поля профиля — их можно сбросить, передав null.
+#: calories_override в NULL означает «вернуться к расчётной норме».
+NULLABLE_PROFILE_FIELDS = frozenset({"body_fat_pct", "calories_override"})
 
 
 def update_profile(user_id: int, patch: dict) -> dict:
@@ -100,6 +101,7 @@ def _profile_row(row: sqlite3.Row) -> dict:
         "weight_kg": row["weight_kg"],
         "activity": row["activity"],
         "body_fat_pct": row["body_fat_pct"],
+        "calories_override": row["calories_override"],
         "goal": row["goal"],
         "first_name": row["first_name"],
     }
@@ -113,6 +115,7 @@ def norms_for(profile: dict) -> dict:
         weight_kg=profile["weight_kg"],
         activity=profile["activity"],
         goal=profile["goal"],
+        calories_override=profile.get("calories_override"),
     ).as_dict()
 
 
@@ -130,6 +133,7 @@ def _meal_row(row: sqlite3.Row, items: list[dict] | None = None) -> dict:
         "carbs_g": float(row["carbs_g"] or 0.0),
         "fiber_g": float(row["fiber_g"] or 0.0),
         "portion_g": row["portion_g"],
+        "portion_unit": row["portion_unit"] or "г",
         "meal_type": row["meal_type"] or "other",
         "eaten_at": row["eaten_at"],
         "ingredients": row["ingredients"],
@@ -216,8 +220,9 @@ def add_meal(user_id: int, day: str, payload: dict) -> dict:
             """
             INSERT INTO protein_entries
                 (user_id, day, food_name, protein_g, calories_kcal, fat_g, carbs_g, fiber_g,
-                 micros_json, portion_g, meal_type, eaten_at, ingredients, source, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 micros_json, portion_g, portion_unit, meal_type, eaten_at, ingredients, source,
+                 updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -230,6 +235,7 @@ def add_meal(user_id: int, day: str, payload: dict) -> dict:
                 data.get("fiber_g"),
                 dump_json(clean_micros(data.get("micros"))),
                 data.get("portion_g"),
+                data.get("portion_unit") or "г",
                 data.get("meal_type") or "other",
                 data.get("eaten_at"),
                 data.get("ingredients"),
@@ -296,6 +302,7 @@ def update_meal(user_id: int, meal_id: int, patch: dict) -> dict | None:
         "carbs_g": "carbs_g",
         "fiber_g": "fiber_g",
         "portion_g": "portion_g",
+        "portion_unit": "portion_unit",
         "meal_type": "meal_type",
         "eaten_at": "eaten_at",
         "ingredients": "ingredients",
@@ -602,6 +609,7 @@ def _product_row(row: sqlite3.Row) -> dict:
         "carbs_g": row["carbs_g"],
         "fiber_g": row["fiber_g"],
         "portion_g": row["portion_g"],
+        "portion_unit": row["portion_unit"] or "г",
         "micros": clean_micros(load_json(row["micros_json"])),
     }
 
@@ -617,13 +625,35 @@ def search_products(user_id: int, query: str, limit: int = 20) -> list[dict]:
     return [_product_row(r) for r in matched[:limit]]
 
 
+def find_product_by_name(user_id: int, name: str) -> dict | None:
+    """Поиск по имени без учёта регистра — SQLite не знает регистра кириллицы."""
+    needle = name.strip().casefold()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM saved_products WHERE user_id = ? ORDER BY id", (user_id,)
+        ).fetchall()
+    return next((_product_row(r) for r in rows if (r["name"] or "").casefold() == needle), None)
+
+
 def add_product(user_id: int, payload: dict) -> dict:
+    """Сохранить продукт. Одноимённый обновляем, а не плодим: пользователь отмечает
+    «сохранить как своё блюдо» при каждом повторе, а список продуктов должен
+    оставаться коротким — и оценивать состав ИИ дважды незачем."""
+    existing = find_product_by_name(user_id, payload["name"])
+    if existing is not None:
+        patch = {k: v for k, v in payload.items() if v is not None}
+        # Уже известный состав не затираем пустым: ручная запись микронутриентов не даёт.
+        if not patch.get("micros"):
+            patch.pop("micros", None)
+        return update_product(user_id, existing["id"], patch) or existing
+
     with connect() as conn:
         cur = conn.execute(
             """
             INSERT INTO saved_products
-                (user_id, name, protein_g, calories_kcal, fat_g, carbs_g, fiber_g, micros_json, portion_g)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, name, protein_g, calories_kcal, fat_g, carbs_g, fiber_g, micros_json,
+                 portion_g, portion_unit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -635,10 +665,58 @@ def add_product(user_id: int, payload: dict) -> dict:
                 payload.get("fiber_g"),
                 dump_json(clean_micros(payload.get("micros"))),
                 payload.get("portion_g"),
+                payload.get("portion_unit") or "г",
             ),
         )
         row = conn.execute("SELECT * FROM saved_products WHERE id = ?", (cur.lastrowid,)).fetchone()
     return _product_row(row)
+
+
+def get_product(user_id: int, product_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM saved_products WHERE id = ? AND user_id = ?", (product_id, user_id)
+        ).fetchone()
+    return _product_row(row) if row else None
+
+
+#: Поля продукта, которые PATCH может сбросить в NULL.
+NULLABLE_PRODUCT_FIELDS = frozenset({"calories_kcal", "fat_g", "carbs_g", "fiber_g", "portion_g"})
+
+
+def update_product(user_id: int, product_id: int, patch: dict) -> dict | None:
+    fields = {
+        k: v
+        for k, v in patch.items()
+        if k != "micros" and (v is not None or k in NULLABLE_PRODUCT_FIELDS)
+    }
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM saved_products WHERE id = ? AND user_id = ?", (product_id, user_id)
+        ).fetchone()
+        if row is None:
+            return None
+        assignments = [f"{k} = ?" for k in fields]
+        values: list[Any] = list(fields.values())
+        if "micros" in patch and patch["micros"] is not None:
+            assignments.append("micros_json = ?")
+            values.append(dump_json(clean_micros(patch["micros"])))
+        if assignments:
+            conn.execute(
+                f"UPDATE saved_products SET {', '.join(assignments)} WHERE id = ? AND user_id = ?",
+                (*values, product_id, user_id),
+            )
+    return get_product(user_id, product_id)
+
+
+def products_without_micros(user_id: int, limit: int) -> list[dict]:
+    """Продукты, у которых состав ещё не известен — кандидаты на ИИ-оценку."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM saved_products WHERE user_id = ? ORDER BY id", (user_id,)
+        ).fetchall()
+    missing = [_product_row(r) for r in rows]
+    return [p for p in missing if not p["micros"]][:limit]
 
 
 def delete_product(user_id: int, product_id: int) -> bool:

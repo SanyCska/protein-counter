@@ -93,6 +93,7 @@ def create_meal(
                 "carbs_g": meal["carbs_g"],
                 "fiber_g": meal["fiber_g"],
                 "portion_g": meal["portion_g"],
+                "portion_unit": meal["portion_unit"],
                 "micros": meal["micros"],
             },
         )

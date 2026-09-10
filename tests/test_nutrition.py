@@ -56,6 +56,35 @@ class TestNorms:
         from_macros = norms.protein_g * 4 + norms.fat_g * 9 + norms.carbs_g * 4
         assert from_macros == pytest.approx(norms.calories, rel=1e-6)
 
+    def test_manual_calories_replace_computed(self):
+        common = dict(sex="m", age=34, height_cm=182, weight_kg=84, activity=1.55, goal="maintain")
+        auto = compute_norms(**common)
+        manual = compute_norms(**common, calories_override=2400)
+        assert manual.calories == 2400
+        assert manual.calories_source == "manual"
+        assert manual.calories_computed == pytest.approx(auto.calories)
+        assert auto.calories_source == "computed"
+
+    def test_manual_calories_keep_protein_and_move_carbs(self):
+        common = dict(sex="m", age=34, height_cm=182, weight_kg=84, activity=1.55, goal="maintain")
+        auto = compute_norms(**common)
+        manual = compute_norms(**common, calories_override=auto.calories - 400)
+        assert manual.protein_g == pytest.approx(auto.protein_g)
+        assert manual.fat_g == pytest.approx(auto.fat_g)
+        assert manual.carbs_g == pytest.approx(auto.carbs_g - 100)
+
+    def test_manual_calories_still_sum_up(self):
+        norms = compute_norms(
+            sex="f", age=30, height_cm=165, weight_kg=60, activity=1.375,
+            goal="lose", calories_override=1600,
+        )
+        from_macros = norms.protein_g * 4 + norms.fat_g * 9 + norms.carbs_g * 4
+        assert from_macros == pytest.approx(norms.calories, rel=1e-6)
+
+    def test_zero_override_falls_back_to_formula(self):
+        common = dict(sex="m", age=34, height_cm=182, weight_kg=84, activity=1.55, goal="maintain")
+        assert compute_norms(**common, calories_override=0).calories_source == "computed"
+
     def test_carbs_never_negative_on_extreme_profile(self):
         # Тяжёлый малоподвижный человек на снижении: белок и жир могут съесть весь бюджет.
         norms = compute_norms(

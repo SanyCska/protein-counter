@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from .nutrition.catalog import KEYS
+from .nutrition.catalog import KEYS, normalize_dose_unit, normalize_portion_unit
 
 Sex = Literal["m", "f"]
 Goal = Literal["lose", "maintain", "gain"]
@@ -18,27 +18,11 @@ NutrientKey = Literal[KEYS]
 #: Время внутри дня — "HH:MM"; иначе сортировка ленты по строке ломается.
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
-_UNIT_ALIASES = {
-    "g": "г",
-    "mg": "мг",
-    "mcg": "мкг",
-    "µg": "мкг",
-    "ug": "мкг",
-    "iu": "МЕ",
-    "ме": "МЕ",
-    "ед": "МЕ",
-}
+DoseUnit = Annotated[Literal["г", "мг", "мкг", "МЕ"], BeforeValidator(normalize_dose_unit)]
 
-
-def _normalize_unit(value: object) -> object:
-    """Латинские единицы (mg, mcg, IU) приводим к кириллическим из справочника."""
-    if not isinstance(value, str):
-        return value
-    cleaned = value.strip()
-    return _UNIT_ALIASES.get(cleaned.lower(), cleaned)
-
-
-DoseUnit = Annotated[Literal["г", "мг", "мкг", "МЕ"], BeforeValidator(_normalize_unit)]
+#: Единица порции: граммы для еды, миллилитры для напитков. Пересчёт между ними
+#: не делаем — плотность продукта нам неизвестна, это только подпись к числу.
+PortionUnit = Annotated[Literal["г", "мл"], BeforeValidator(normalize_portion_unit)]
 
 
 class Micros(BaseModel):
@@ -66,6 +50,7 @@ class MealIn(BaseModel):
     carbs_g: float | None = Field(default=None, ge=0, le=2000)
     fiber_g: float | None = Field(default=None, ge=0, le=200)
     portion_g: float | None = Field(default=None, ge=0, le=10000)
+    portion_unit: PortionUnit = "г"
     meal_type: MealType = "other"
     eaten_at: str | None = Field(default=None, pattern=TIME_PATTERN, description="HH:MM")
     ingredients: str | None = Field(default=None, max_length=4000)
@@ -84,6 +69,7 @@ class MealPatch(BaseModel):
     carbs_g: float | None = Field(default=None, ge=0, le=2000)
     fiber_g: float | None = Field(default=None, ge=0, le=200)
     portion_g: float | None = Field(default=None, ge=0, le=10000)
+    portion_unit: PortionUnit | None = None
     meal_type: MealType | None = None
     eaten_at: str | None = Field(default=None, pattern=TIME_PATTERN)
     ingredients: str | None = Field(default=None, max_length=4000)
@@ -102,6 +88,7 @@ class MealOut(BaseModel):
     carbs_g: float
     fiber_g: float
     portion_g: float | None
+    portion_unit: PortionUnit
     meal_type: MealType
     eaten_at: str | None
     ingredients: str | None
@@ -177,6 +164,17 @@ class SupplementOut(SupplementIn):
     id: int
 
 
+class SupplementBulkIn(BaseModel):
+    """Одна банка — несколько веществ: с этикетки мультивитаминов их приезжает десяток."""
+
+    items: list[SupplementIn] = Field(min_length=1, max_length=40)
+
+
+#: Границы своей нормы: ниже 800 ккал — уже не диета, а вред; выше 8000 — опечатка.
+CALORIES_OVERRIDE_MIN = 800
+CALORIES_OVERRIDE_MAX = 8000
+
+
 class ProfileIn(BaseModel):
     sex: Sex | None = None
     age: int | None = Field(default=None, ge=10, le=110)
@@ -185,6 +183,10 @@ class ProfileIn(BaseModel):
     activity: float | None = Field(default=None, ge=1.2, le=1.9)
     body_fat_pct: float | None = Field(default=None, ge=1, le=70)
     goal: Goal | None = None
+    #: null — вернуться к расчёту по формуле
+    calories_override: float | None = Field(
+        default=None, ge=CALORIES_OVERRIDE_MIN, le=CALORIES_OVERRIDE_MAX
+    )
 
 
 class ProfileOut(BaseModel):
@@ -195,6 +197,7 @@ class ProfileOut(BaseModel):
     weight_kg: float
     activity: float
     body_fat_pct: float | None
+    calories_override: float | None
     goal: Goal
     first_name: str | None
     norms: dict
@@ -208,7 +211,20 @@ class ProductIn(BaseModel):
     carbs_g: float | None = Field(default=None, ge=0, le=2000)
     fiber_g: float | None = Field(default=None, ge=0, le=200)
     portion_g: float | None = Field(default=None, ge=0, le=10000)
+    portion_unit: PortionUnit = "г"
     micros: dict[str, float] = Field(default_factory=dict)
+
+
+class ProductPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    protein_g: float | None = Field(default=None, ge=0, le=1000)
+    calories_kcal: float | None = Field(default=None, ge=0, le=20000)
+    fat_g: float | None = Field(default=None, ge=0, le=1000)
+    carbs_g: float | None = Field(default=None, ge=0, le=2000)
+    fiber_g: float | None = Field(default=None, ge=0, le=200)
+    portion_g: float | None = Field(default=None, ge=0, le=10000)
+    portion_unit: PortionUnit | None = None
+    micros: dict[str, float] | None = None
 
 
 class ProductOut(ProductIn):
@@ -218,6 +234,81 @@ class ProductOut(ProductIn):
 class AiParseIn(BaseModel):
     text: str = Field(default="", max_length=2000)
     image_base64: str | None = Field(default=None, description="data:image/...;base64,...")
+
+
+class AiPhotoIn(BaseModel):
+    """Фото этикетки; текстом можно уточнить, что именно снято."""
+
+    image_base64: str = Field(min_length=1, description="data:image/...;base64,...")
+    text: str = Field(default="", max_length=2000)
+
+
+class AiLabelOut(BaseModel):
+    """Состав продукта, снятый с упаковки."""
+
+    name: str
+    #: порция с упаковки в единицах `portion_unit`; None — на упаковке её нет
+    portion_g: float | None
+    portion_unit: PortionUnit
+    #: КБЖУ и микронутриенты на 100 г (или 100 мл)
+    per100: dict[str, float]
+    #: КБЖУ порции — то, что подставляем в форму
+    calories_kcal: float
+    protein_g: float
+    fat_g: float
+    carbs_g: float
+    fiber_g: float
+    #: микронутриенты порции
+    micros: dict[str, float]
+    confidence: str
+    comment: str
+
+
+class AiSupplementItem(BaseModel):
+    name: str = Field(max_length=80)
+    nutrient_key: NutrientKey | None = None
+    dose: float = Field(ge=0, le=100000)
+    unit: DoseUnit
+
+
+class AiSupplementLabelOut(BaseModel):
+    """Этикетка банки: название и все вещества, которые удалось прочитать."""
+
+    name: str
+    items: list[AiSupplementItem]
+    when_label: str | None = None
+    confidence: str
+    comment: str
+
+
+class AiProductIn(BaseModel):
+    """Что знаем о продукте на момент оценки — КБЖУ помогают модели его узнать."""
+
+    name: str = Field(min_length=1, max_length=200)
+    portion_g: float | None = Field(default=None, ge=0, le=10000)
+    calories_kcal: float | None = Field(default=None, ge=0, le=20000)
+    protein_g: float | None = Field(default=None, ge=0, le=1000)
+    fat_g: float | None = Field(default=None, ge=0, le=1000)
+    carbs_g: float | None = Field(default=None, ge=0, le=2000)
+
+
+class AiProductOut(BaseModel):
+    #: На какую массу пересчитаны `micros`
+    portion_g: float
+    per100: dict[str, float]
+    micros: dict[str, float]
+    fiber_g: float
+    confidence: str
+    comment: str
+
+
+class ProductsEstimateOut(BaseModel):
+    """Итог пакетной оценки: что обновилось и что не получилось."""
+
+    updated: list[ProductOut]
+    failed: int
+    remaining: int
+    error: str | None = None
 
 
 class AiParsedItem(BaseModel):
