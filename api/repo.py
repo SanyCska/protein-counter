@@ -519,6 +519,7 @@ def _supplement_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
+        "group_name": row["group_name"],
         "nutrient_key": row["nutrient_key"],
         "dose": float(row["dose"]),
         "unit": row["unit"],
@@ -542,12 +543,14 @@ def add_supplement(user_id: int, payload: dict) -> dict:
     with connect() as conn:
         cur = conn.execute(
             """
-            INSERT INTO supplements (user_id, name, nutrient_key, dose, unit, when_label, frequency, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO supplements
+                (user_id, name, group_name, nutrient_key, dose, unit, when_label, frequency, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
                 payload["name"].strip(),
+                (payload.get("group_name") or "").strip() or None,
                 payload.get("nutrient_key"),
                 float(payload["dose"]),
                 payload["unit"],
@@ -561,7 +564,7 @@ def add_supplement(user_id: int, payload: dict) -> dict:
 
 
 #: Поля добавки, которые PATCH может сбросить в NULL.
-NULLABLE_SUPPLEMENT_FIELDS = frozenset({"nutrient_key", "when_label"})
+NULLABLE_SUPPLEMENT_FIELDS = frozenset({"nutrient_key", "when_label", "group_name"})
 
 
 def update_supplement(user_id: int, supplement_id: int, patch: dict) -> dict | None:
@@ -594,6 +597,19 @@ def delete_supplement(user_id: int, supplement_id: int) -> bool:
             "DELETE FROM supplements WHERE id = ? AND user_id = ?", (supplement_id, user_id)
         )
         return cur.rowcount > 0
+
+
+def delete_supplements(user_id: int, ids: list[int]) -> int:
+    """Удалить несколько веществ разом — банку из списка убирают целиком."""
+    if not ids:
+        return 0
+    placeholders = ", ".join("?" for _ in ids)
+    with connect() as conn:
+        cur = conn.execute(
+            f"DELETE FROM supplements WHERE user_id = ? AND id IN ({placeholders})",
+            (user_id, *ids),
+        )
+        return cur.rowcount
 
 
 # ──────────────────────────────── продукты ──────────────────────────────

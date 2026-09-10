@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends
 from .. import repo
 from ..auth import TelegramUser, current_user
 from ..deps import not_found
-from ..schemas import SupplementBulkIn, SupplementIn, SupplementOut, SupplementPatch
+from ..schemas import (
+    SupplementBulkIn,
+    SupplementIdsIn,
+    SupplementIn,
+    SupplementOut,
+    SupplementPatch,
+)
 
 router = APIRouter(tags=["supplements"])
 
@@ -24,9 +30,23 @@ def create(payload: SupplementIn, user: TelegramUser = Depends(current_user)) ->
 
 @router.post("/supplements/bulk", response_model=list[SupplementOut], status_code=201)
 def create_many(payload: SupplementBulkIn, user: TelegramUser = Depends(current_user)) -> list[dict]:
-    """Сохранить состав одной банки целиком: с этикетки мультивитаминов приезжает
-    десяток веществ, и подтверждать каждое по отдельности незачем."""
-    return [repo.add_supplement(user.id, item.model_dump()) for item in payload.items]
+    """Сохранить банку целиком: с этикетки мультивитаминов приезжает десяток веществ,
+    и подтверждать каждое по отдельности незачем.
+
+    Название банки общее для всех веществ и ставится здесь, а не приходит в каждом
+    элементе: тогда список добавок гарантированно не расползётся на десять строк.
+    """
+    return [
+        repo.add_supplement(user.id, {**item.model_dump(), "group_name": payload.name})
+        for item in payload.items
+    ]
+
+
+@router.post("/supplements/bulk-delete", status_code=204)
+def remove_many(payload: SupplementIdsIn, user: TelegramUser = Depends(current_user)) -> None:
+    """Убрать банку из списка — одним запросом, а не по веществу за раз."""
+    if not repo.delete_supplements(user.id, payload.ids):
+        raise not_found("Добавка")
 
 
 @router.patch("/supplements/{supplement_id}", response_model=SupplementOut)

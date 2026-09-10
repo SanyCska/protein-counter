@@ -211,6 +211,9 @@ def migrate() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_supplements_user ON supplements (user_id)"
         )
+        # Название банки: одна добавка — это часто десяток веществ, и в списке они
+        # должны стоять одной строкой, а не десятью.
+        _add_column(conn, "supplements", "group_name", "TEXT")
 
 
 def load_json(raw: Any) -> dict:

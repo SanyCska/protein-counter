@@ -142,6 +142,9 @@ class WorkoutTemplateOut(WorkoutTemplateIn):
 
 class SupplementIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    #: Название банки, если вещество приехало с этикетки: по нему добавка собирается
+    #: в одну запись. None — самостоятельная добавка, сама себе название.
+    group_name: str | None = Field(default=None, max_length=80)
     nutrient_key: NutrientKey | None = None
     dose: float = Field(ge=0, le=100000)
     unit: DoseUnit
@@ -152,6 +155,7 @@ class SupplementIn(BaseModel):
 
 class SupplementPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
+    group_name: str | None = Field(default=None, max_length=80)
     nutrient_key: NutrientKey | None = None
     dose: float | None = Field(default=None, ge=0, le=100000)
     unit: DoseUnit | None = None
@@ -165,9 +169,20 @@ class SupplementOut(SupplementIn):
 
 
 class SupplementBulkIn(BaseModel):
-    """Одна банка — несколько веществ: с этикетки мультивитаминов их приезжает десяток."""
+    """Одна банка — несколько веществ: с этикетки мультивитаминов их приезжает десяток.
 
+    Название даёт пользователь, и оно общее для всех веществ: в списке добавок и в ленте
+    дня банка должна выглядеть одной записью, а в отчёт попасть каждым веществом.
+    """
+
+    name: str = Field(min_length=1, max_length=80)
     items: list[SupplementIn] = Field(min_length=1, max_length=40)
+
+
+class SupplementIdsIn(BaseModel):
+    """Удаление банки целиком — по идентификаторам её веществ."""
+
+    ids: list[int] = Field(min_length=1, max_length=40)
 
 
 #: Границы своей нормы: ниже 800 ккал — уже не диета, а вред; выше 8000 — опечатка.

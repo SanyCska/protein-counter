@@ -853,41 +853,93 @@ class TestSupplementLabelPhoto:
         assert response.status_code == 503
 
 
+def add_jar(client, name="Мультивитамины", items=None):
+    payload = {
+        "name": name,
+        "items": items
+        or [
+            {"name": "D3", "nutrient_key": "vit_d", "dose": 2000, "unit": "IU"},
+            {"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "mg"},
+        ],
+    }
+    response = client.post("/api/supplements/bulk", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
 class TestSupplementsBulk:
     def test_whole_label_is_saved_at_once(self, client):
-        created = client.post(
-            "/api/supplements/bulk",
-            json={
-                "items": [
-                    {"name": "D3", "nutrient_key": "vit_d", "dose": 2000, "unit": "IU"},
-                    {"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "mg"},
-                ]
-            },
-        )
-        assert created.status_code == 201
-        assert [s["unit"] for s in created.json()] == ["МЕ", "мг"]
+        created = add_jar(client)
+        assert [s["unit"] for s in created] == ["МЕ", "мг"]
         assert len(client.get("/api/supplements").json()) == 2
 
-    def test_saved_substances_count_in_the_day_report(self, client):
-        client.post(
-            "/api/supplements/bulk",
-            json={"items": [{"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "мг"}]},
+    def test_all_substances_share_the_name_user_typed(self, client):
+        created = add_jar(client, name="Мультивитамины Solgar")
+        assert {s["group_name"] for s in created} == {"Мультивитамины Solgar"}
+        # Название вещества остаётся своим — оно нужно и в списке банки, и в отчёте.
+        assert [s["name"] for s in created] == ["D3", "Магний"]
+
+    def test_name_in_items_does_not_split_the_jar(self, client):
+        created = add_jar(
+            client,
+            name="Мультивитамины",
+            items=[
+                {"name": "D3", "dose": 2000, "unit": "МЕ", "group_name": "Другая банка"},
+                {"name": "Магний", "dose": 400, "unit": "мг"},
+            ],
         )
+        assert {s["group_name"] for s in created} == {"Мультивитамины"}
+
+    def test_single_supplement_has_no_group(self, client):
+        created = client.post(
+            "/api/supplements", json={"name": "Магний", "dose": 400, "unit": "мг"}
+        ).json()
+        assert created["group_name"] is None
+
+    def test_saved_substances_count_in_the_day_report(self, client):
+        add_jar(client)
         report = client.get(f"/api/report/day/{DAY}").json()
         magnesium = next(r for r in report["micros"] if r["key"] == "magnesium")
+        vit_d = next(r for r in report["micros"] if r["key"] == "vit_d")
         assert magnesium["value"] == pytest.approx(400)
+        assert vit_d["value"] == pytest.approx(2000)
+
+    def test_jar_is_deleted_as_a_whole(self, client):
+        created = add_jar(client)
+        ids = [s["id"] for s in created]
+        assert client.post("/api/supplements/bulk-delete", json={"ids": ids}).status_code == 204
+        assert client.get("/api/supplements").json() == []
+
+    def test_other_users_jar_is_not_deleted(self, client, user_id):
+        created = add_jar(client)
+        ids = [s["id"] for s in created]
+        client.headers["X-Dev-User-Id"] = "999"
+        assert client.post("/api/supplements/bulk-delete", json={"ids": ids}).status_code == 404
+        client.headers["X-Dev-User-Id"] = str(user_id)
+        assert len(client.get("/api/supplements").json()) == 2
+
+    def test_name_is_required(self, client):
+        response = client.post(
+            "/api/supplements/bulk",
+            json={"items": [{"name": "Магний", "dose": 400, "unit": "мг"}]},
+        )
+        assert response.status_code == 422
 
     def test_empty_list_rejected(self, client):
-        assert client.post("/api/supplements/bulk", json={"items": []}).status_code == 422
+        assert (
+            client.post("/api/supplements/bulk", json={"name": "X", "items": []}).status_code
+            == 422
+        )
 
     def test_one_bad_item_rejects_the_whole_batch(self, client):
         response = client.post(
             "/api/supplements/bulk",
             json={
+                "name": "Банка",
                 "items": [
                     {"name": "Магний", "dose": 400, "unit": "мг"},
                     {"name": "Ерунда", "dose": 1, "unit": "шт"},
-                ]
+                ],
             },
         )
         assert response.status_code == 422
