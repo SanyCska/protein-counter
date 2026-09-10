@@ -166,24 +166,26 @@ def build_day_report(
 
     rows = micro_rows(consumed, norms["micros"])
     norm_calories = norms["calories"]
-    net = totals["calories_eaten"] - totals["calories_burned"]
+    eaten = totals["calories_eaten"]
 
     return {
         "day": day.isoformat(),
         "totals": {
             **{k: round(v, 1) if isinstance(v, float) else v for k, v in totals.items()},
-            "calories_net": round(net, 1),
-            "balance_vs_norm": round(net - norm_calories, 1),
+            # Расход на нагрузке остаётся справочной цифрой: к норме сравнивается
+            # съеденное, иначе тренировка молча увеличивает дневной бюджет.
+            "calories_net": round(eaten - totals["calories_burned"], 1),
+            "balance_vs_norm": round(eaten - norm_calories, 1),
         },
         "norms": norms,
         "macros": [
             {
                 "key": "calories",
-                "name": "Калории с нагрузкой",
+                "name": "Калории",
                 "unit": "ккал",
-                "value": round(net),
+                "value": round(eaten),
                 "norm": norm_calories,
-                "pct": _pct(net, norm_calories),
+                "pct": _pct(eaten, norm_calories),
             },
             {
                 "key": "protein",
@@ -315,7 +317,8 @@ def build_progress(
     avg_calories = sum(eaten[d] for d in active_days) / active_count
     avg_protein = sum(protein[d] for d in active_days) / active_count
 
-    net = {d: eaten[d] - burned[d] - norms["calories"] for d in days}
+    # Баланс к норме считается по съеденному: расход живёт своим графиком.
+    net = {d: eaten[d] - norms["calories"] for d in days}
 
     tiles = [
         {
@@ -402,14 +405,19 @@ def _progress_summary(
     active = [d for d in days if eaten[d] > 0]
     if not active:
         return "За период ещё нет записей."
-    nets = [eaten[d] - burned[d] - norm for d in active]
+    nets = [eaten[d] - norm for d in active]
     avg = sum(nets) / len(nets)
     deficit_days = sum(1 for n in nets if n < 0)
     direction = "дефицит" if avg < 0 else "профицит"
-    return (
+    summary = (
         f"В среднем {direction} {abs(round(avg))} ккал в день; "
         f"дней с дефицитом — {deficit_days} из {len(active)}."
     )
+    # Расход упоминаем отдельно: в баланс он не входит, но знать его полезно.
+    spent = round(sum(burned.values()))
+    if spent > 0:
+        summary += f" На нагрузке потрачено {spent} ккал за период."
+    return summary
 
 
 __all__ = [

@@ -28,7 +28,7 @@ def read_day(day: str, user: TelegramUser = Depends(current_user)) -> dict:
         repo.list_supplements(user.id, only_active=True), target
     )
     totals = reports.day_totals(meals, workouts)
-    net = totals["calories_eaten"] - totals["calories_burned"]
+    eaten = totals["calories_eaten"]
 
     return {
         "day": target.isoformat(),
@@ -38,9 +38,11 @@ def read_day(day: str, user: TelegramUser = Depends(current_user)) -> dict:
         "totals": {
             "calories_eaten": round(totals["calories_eaten"]),
             "calories_burned": round(totals["calories_burned"]),
-            "calories_net": round(net),
-            "calories_remaining": round(norms["calories"] - net),
-            "balance_vs_norm": round(net - norms["calories"]),
+            # Нагрузка в бюджет калорий не входит: норму сравниваем со съеденным,
+            # а расход показываем отдельной строкой и отдельным графиком.
+            "calories_net": round(eaten - totals["calories_burned"]),
+            "calories_remaining": round(norms["calories"] - eaten),
+            "balance_vs_norm": round(eaten - norms["calories"]),
             "protein_g": round(totals["protein_g"]),
             "fat_g": round(totals["fat_g"]),
             "carbs_g": round(totals["carbs_g"]),

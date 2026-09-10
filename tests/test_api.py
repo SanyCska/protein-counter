@@ -177,12 +177,18 @@ class TestWorkouts:
         ).json()
         assert workout["kcal"] == 590
 
-    def test_workout_reduces_day_balance(self, client):
+    def test_workout_does_not_change_the_calorie_budget(self, client):
+        client.put("/api/profile", json={"calories_override": 2000})
         add_meal(client, calories_kcal=1840)
+        before = client.get(f"/api/diary/{DAY}").json()["totals"]
         client.post(f"/api/diary/{DAY}/workouts", json={"kind": "swimming", "minutes": 60, "kcal": 520})
         totals = client.get(f"/api/diary/{DAY}").json()["totals"]
+
+        # Расход показываем, но к норме сравниваем только съеденное.
         assert totals["calories_burned"] == 520
         assert totals["calories_net"] == 1320
+        assert totals["calories_remaining"] == before["calories_remaining"] == 160
+        assert totals["balance_vs_norm"] == before["balance_vs_norm"] == -160
 
     def test_patch_minutes_recalculates_kcal(self, client):
         client.put("/api/profile", json={"weight_kg": 80})

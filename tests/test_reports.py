@@ -87,7 +87,11 @@ class TestDayReport:
         assert report["totals"]["calories_eaten"] == 1840
         assert report["totals"]["calories_burned"] == 520
         assert report["totals"]["calories_net"] == 1320
-        assert report["totals"]["balance_vs_norm"] == pytest.approx(1320 - NORMS["calories"])
+        # Нагрузка в бюджет не входит: к норме сравнивается съеденное.
+        assert report["totals"]["balance_vs_norm"] == pytest.approx(1840 - NORMS["calories"])
+        calories = next(m for m in report["macros"] if m["key"] == "calories")
+        assert calories["value"] == 1840
+        assert calories["name"] == "Калории"
 
     def test_supplement_counts_toward_micronutrient(self):
         supplements = [
@@ -201,7 +205,7 @@ class TestProgress:
         )
         assert result["avg_calories"] == 2500
 
-    def test_net_balance_subtracts_burn_and_norm(self):
+    def test_net_balance_counts_food_against_the_norm(self):
         days = ["2026-08-01"]
         result = reports.build_progress(
             days=days,
@@ -209,7 +213,10 @@ class TestProgress:
             workouts=[workout(day=days[0], kcal=500)],
             norms=NORMS,
         )
-        assert result["net"][0] == pytest.approx(round(3000 - 500 - NORMS["calories"]))
+        # Тренировка не увеличивает дневной бюджет, но попадает в сводку отдельно.
+        assert result["net"][0] == pytest.approx(round(3000 - NORMS["calories"]))
+        assert result["burned"][0] == 500
+        assert "500 ккал за период" in result["summary"]
 
     def test_burn_breakdown_by_kind(self):
         days = ["2026-08-01", "2026-08-02"]
