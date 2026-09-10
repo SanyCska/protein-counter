@@ -15,6 +15,9 @@ Frequency = Literal["daily", "every_other_day", "course"]
 Range = Literal["week", "month"]
 NutrientKey = Literal[KEYS]
 
+#: Столько таблеток за приём ещё бывает; больше — ошибка ввода или распознавания.
+MAX_SERVING = 20
+
 #: Время внутри дня — "HH:MM"; иначе сортировка ленты по строке ломается.
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
@@ -146,8 +149,13 @@ class SupplementIn(BaseModel):
     #: в одну запись. None — самостоятельная добавка, сама себе название.
     group_name: str | None = Field(default=None, max_length=80)
     nutrient_key: NutrientKey | None = None
+    #: Доза как напечатана на этикетке — на `label_serving` единиц приёма.
     dose: float = Field(ge=0, le=100000)
     unit: DoseUnit
+    #: На сколько таблеток (капсул, ложек) этикетка считает дозу
+    label_serving: float = Field(default=1, gt=0, le=MAX_SERVING)
+    #: Сколько их принимает пользователь: 1 из 3 — значит треть дозы
+    taken_serving: float = Field(default=1, gt=0, le=MAX_SERVING)
     when_label: str | None = Field(default=None, max_length=40)
     frequency: Frequency = "daily"
     active: bool = True
@@ -159,6 +167,8 @@ class SupplementPatch(BaseModel):
     nutrient_key: NutrientKey | None = None
     dose: float | None = Field(default=None, ge=0, le=100000)
     unit: DoseUnit | None = None
+    label_serving: float | None = Field(default=None, gt=0, le=MAX_SERVING)
+    taken_serving: float | None = Field(default=None, gt=0, le=MAX_SERVING)
     when_label: str | None = Field(default=None, max_length=40)
     frequency: Frequency | None = None
     active: bool | None = None
@@ -166,6 +176,9 @@ class SupplementPatch(BaseModel):
 
 class SupplementOut(SupplementIn):
     id: int
+    #: Сколько реально принимается: `dose` × `taken_serving` / `label_serving`.
+    #: Именно это число идёт в отчёт и показывается в списке.
+    effective_dose: float
 
 
 class SupplementBulkIn(BaseModel):
@@ -176,6 +189,8 @@ class SupplementBulkIn(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=80)
+    label_serving: float = Field(default=1, gt=0, le=MAX_SERVING)
+    taken_serving: float = Field(default=1, gt=0, le=MAX_SERVING)
     items: list[SupplementIn] = Field(min_length=1, max_length=40)
 
 

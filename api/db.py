@@ -214,6 +214,10 @@ def migrate() -> None:
         # Название банки: одна добавка — это часто десяток веществ, и в списке они
         # должны стоять одной строкой, а не десятью.
         _add_column(conn, "supplements", "group_name", "TEXT")
+        # Доза хранится как на этикетке, а на сколько единиц приёма она посчитана и
+        # сколько их принимают — рядом: таблица бывает на три таблетки, а пьют одну.
+        _add_column(conn, "supplements", "label_serving", "REAL")
+        _add_column(conn, "supplements", "taken_serving", "REAL")
 
 
 def load_json(raw: Any) -> dict:

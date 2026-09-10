@@ -516,12 +516,20 @@ def delete_template(user_id: int, template_id: int) -> bool:
 
 
 def _supplement_row(row: sqlite3.Row) -> dict:
+    # Старые записи заведены до появления долей приёма: для них этикетка и приём
+    # равны единице, то есть доза и есть то, что принимается.
+    label = float(row["label_serving"] or 1.0) or 1.0
+    taken = float(row["taken_serving"] or 1.0)
+    dose = float(row["dose"])
     return {
         "id": row["id"],
         "name": row["name"],
         "group_name": row["group_name"],
         "nutrient_key": row["nutrient_key"],
-        "dose": float(row["dose"]),
+        "dose": dose,
+        "label_serving": label,
+        "taken_serving": taken,
+        "effective_dose": round(dose * taken / label, 4),
         "unit": row["unit"],
         "when_label": row["when_label"],
         "frequency": row["frequency"],
@@ -544,8 +552,9 @@ def add_supplement(user_id: int, payload: dict) -> dict:
         cur = conn.execute(
             """
             INSERT INTO supplements
-                (user_id, name, group_name, nutrient_key, dose, unit, when_label, frequency, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, name, group_name, nutrient_key, dose, unit, label_serving,
+                 taken_serving, when_label, frequency, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -554,6 +563,8 @@ def add_supplement(user_id: int, payload: dict) -> dict:
                 payload.get("nutrient_key"),
                 float(payload["dose"]),
                 payload["unit"],
+                float(payload.get("label_serving") or 1.0),
+                float(payload.get("taken_serving") or 1.0),
                 payload.get("when_label"),
                 payload.get("frequency") or "daily",
                 1 if payload.get("active", True) else 0,

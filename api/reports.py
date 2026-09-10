@@ -60,7 +60,9 @@ def supplement_micros(supplements: list[dict]) -> dict[str, float]:
         key = supplement.get("nutrient_key")
         if not key or key not in BY_KEY:
             continue
-        converted = convert_dose(float(supplement["dose"]), supplement["unit"], BY_KEY[key].unit)
+        # Считаем то, что принимается: этикетка бывает на три таблетки, а пьют одну.
+        dose = float(supplement.get("effective_dose", supplement["dose"]))
+        converted = convert_dose(dose, supplement["unit"], BY_KEY[key].unit)
         if converted is None:
             continue
         totals[key] = totals.get(key, 0.0) + converted

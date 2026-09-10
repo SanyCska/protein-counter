@@ -36,10 +36,14 @@ def create_many(payload: SupplementBulkIn, user: TelegramUser = Depends(current_
     Название банки общее для всех веществ и ставится здесь, а не приходит в каждом
     элементе: тогда список добавок гарантированно не расползётся на десять строк.
     """
-    return [
-        repo.add_supplement(user.id, {**item.model_dump(), "group_name": payload.name})
-        for item in payload.items
-    ]
+    # Название и доли приёма — общие для банки: одна таблетка не может быть «одной
+    # третью» для витамина A и «целой» для магния.
+    shared = {
+        "group_name": payload.name,
+        "label_serving": payload.label_serving,
+        "taken_serving": payload.taken_serving,
+    }
+    return [repo.add_supplement(user.id, {**item.model_dump(), **shared}) for item in payload.items]
 
 
 @router.post("/supplements/bulk-delete", status_code=204)

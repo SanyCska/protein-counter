@@ -923,6 +923,50 @@ class TestSupplementsBulk:
         assert magnesium["value"] == pytest.approx(400)
         assert vit_d["value"] == pytest.approx(2000)
 
+    def test_third_of_a_tablet_counts_as_a_third(self, client):
+        """Этикетка Opti-Men считает дозы на три таблетки, а пьют одну."""
+        created = client.post(
+            "/api/supplements/bulk",
+            json={
+                "name": "Оптимен",
+                "label_serving": 3,
+                "taken_serving": 1,
+                "items": [
+                    {"name": "Витамин A", "nutrient_key": "vit_a", "dose": 2800, "unit": "мкг"},
+                    {"name": "Цинк", "nutrient_key": "zinc", "dose": 15, "unit": "мг"},
+                ],
+            },
+        ).json()
+        # Доза остаётся как на этикетке, а принимается треть.
+        assert [s["dose"] for s in created] == [2800, 15]
+        assert created[0]["effective_dose"] == pytest.approx(933.3333, abs=0.001)
+
+        report = client.get(f"/api/report/day/{DAY}").json()
+        vit_a = next(r for r in report["micros"] if r["key"] == "vit_a")
+        zinc = next(r for r in report["micros"] if r["key"] == "zinc")
+        assert vit_a["value"] == pytest.approx(933.333, abs=0.01)
+        assert zinc["value"] == pytest.approx(5)
+
+    def test_whole_serving_is_the_default(self, client):
+        created = add_jar(client)
+        assert created[0]["label_serving"] == 1
+        assert created[0]["taken_serving"] == 1
+        assert created[0]["effective_dose"] == created[0]["dose"]
+
+    def test_taken_serving_can_be_changed_later(self, client):
+        created = add_jar(client)
+        updated = client.patch(
+            f"/api/supplements/{created[0]['id']}", json={"label_serving": 3, "taken_serving": 1}
+        ).json()
+        assert updated["effective_dose"] == pytest.approx(updated["dose"] / 3)
+
+    def test_absurd_serving_rejected(self, client):
+        response = client.post(
+            "/api/supplements",
+            json={"name": "X", "dose": 1, "unit": "мг", "taken_serving": 0},
+        )
+        assert response.status_code == 422
+
     def test_jar_is_deleted_as_a_whole(self, client):
         created = add_jar(client)
         ids = [s["id"] for s in created]
