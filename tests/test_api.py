@@ -434,6 +434,25 @@ class TestSupplementUnits:
         vit_d = next(r for r in report["micros"] if r["key"] == "vit_d")
         assert vit_d["value"] == pytest.approx(2000)
 
+    def test_vitamin_d_in_mcg_converts_to_iu(self, client):
+        # С этикеток витамин D чаще идёт в мкг; в отчёте он живёт в МЕ, 1 мкг = 40 МЕ.
+        client.post(
+            "/api/supplements",
+            json={"name": "D3", "nutrient_key": "vit_d", "dose": 7, "unit": "мкг"},
+        )
+        report = client.get(f"/api/report/day/{DAY}").json()
+        vit_d = next(r for r in report["micros"] if r["key"] == "vit_d")
+        assert vit_d["value"] == pytest.approx(280)
+
+    def test_vitamin_a_in_mcg_is_taken_as_is(self, client):
+        client.post(
+            "/api/supplements",
+            json={"name": "Витамин A", "nutrient_key": "vit_a", "dose": 2800, "unit": "мкг"},
+        )
+        report = client.get(f"/api/report/day/{DAY}").json()
+        vit_a = next(r for r in report["micros"] if r["key"] == "vit_a")
+        assert vit_a["value"] == pytest.approx(2800)
+
     def test_unknown_unit_and_nutrient_rejected(self, client):
         base = {"name": "X", "dose": 1}
         assert client.post("/api/supplements", json={**base, "unit": "шт"}).status_code == 422
