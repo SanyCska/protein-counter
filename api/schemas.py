@@ -275,6 +275,9 @@ class AiSupplementLabelOut(BaseModel):
     """Этикетка банки: название и все вещества, которые удалось прочитать."""
 
     name: str
+    #: На сколько единиц приёма этикетка считает дозы — база для «принимаю одну вместо двух»
+    serving: float = Field(ge=0, le=20)
+    serving_unit: str
     items: list[AiSupplementItem]
     when_label: str | None = None
     confidence: str

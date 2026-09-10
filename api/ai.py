@@ -106,12 +106,20 @@ LABEL_SYSTEM = f"""Ты — нутрициолог-ассистент. На фо
 _DOSE_UNIT_SPEC = ", ".join(f'"{u}"' for u in DOSE_UNITS)
 _NUTRIENT_KEY_SPEC = ", ".join(f"{n.key} — {n.name}" for n in NUTRIENTS)
 
+#: На что этикетка считает дозы. Формы для склонения знает фронт, здесь — только
+#: словарь допустимых значений, чтобы модель не выдумывала «драже» и «софтгели».
+SERVING_UNITS: tuple[str, ...] = ("капсула", "таблетка", "мерная ложка", "пакетик", "порция")
+
+_SERVING_UNIT_SPEC = " | ".join(f'"{u}"' for u in SERVING_UNITS)
+
 SUPPLEMENT_SYSTEM = f"""Ты — нутрициолог-ассистент. На фото — банка витаминов или добавки.
-Прочитай этикетку и верни ВСЕ вещества из состава с дозами на суточный приём.
+Прочитай этикетку и верни ВСЕ вещества из состава ровно с теми дозами, что на ней указаны.
 
 Ответь ОДНИМ JSON-объектом без markdown:
 {{
   "name": "<название добавки с банки>",
+  "serving": <на сколько единиц приёма указаны дозы, числом>,
+  "serving_unit": {_SERVING_UNIT_SPEC},
   "when_label": "утром"|"днём"|"вечером"|"с едой"|"после тренировки"|null,
   "confidence": "low"|"medium"|"high",
   "comment": "<одно короткое предложение на русском>",
@@ -126,8 +134,10 @@ SUPPLEMENT_SYSTEM = f"""Ты — нутрициолог-ассистент. На
 }}
 
 Правила:
-- Доза — НА СУТОЧНЫЙ ПРИЁМ (столько таблеток/капсул, сколько указано на банке), а не на
-  одну капсулу, если они различаются.
+- Дозы бери ровно как на этикетке, НИЧЕГО не пересчитывая. Если таблица дана на две
+  капсулы — так и верни, поставив "serving": 2 и "serving_unit": "капсула".
+- `serving` — на сколько единиц приёма даны дозы в таблице (обычно 1 или 2). Не указано
+  прямо — считай, что на одну единицу, и ставь 1.
 - `nutrient_key` бери из справочника: {_NUTRIENT_KEY_SPEC}. Если вещества там нет
   (коллаген, пробиотики, экстракты) — null, но саму позицию всё равно верни.
 - `unit` — одна из: {_DOSE_UNIT_SPEC}. Витамин D переводи в МЕ.
@@ -165,6 +175,9 @@ MAX_DOSE = 100000.0
 #: Сколько веществ берём с одной этикетки — у мультивитаминов список длинный,
 #: но не бесконечный, а схема добавок ограничена сорока позициями.
 MAX_SUPPLEMENT_ITEMS = 40
+
+#: Столько единиц приёма ещё бывает в таблице на банке; больше — ошибка распознавания.
+MAX_SERVING = 20.0
 
 
 def client() -> OpenAI:
@@ -380,10 +393,20 @@ def normalize_supplement_label(payload: dict, *, fallback_name: str) -> dict:
         if len(items) >= MAX_SUPPLEMENT_ITEMS:
             break
 
+    # На сколько капсул этикетка считает дозы: без этого «принимаю одну вместо двух»
+    # не пересчитать, а таблица на банке чаще всего дана именно на приём, а не на штуку.
+    serving = _positive(payload.get("serving"))
+    serving = min(serving, MAX_SERVING) if serving > 0 else 1.0
+    serving_unit = str(payload.get("serving_unit") or "").strip().lower()
+    if serving_unit not in SERVING_UNITS:
+        serving_unit = "порция"
+
     when = str(payload.get("when_label") or "").strip()
     name = str(payload.get("name") or "").strip() or fallback_name
     return {
         "name": name[:80],
+        "serving": round(serving, 2),
+        "serving_unit": serving_unit,
         "items": items,
         "when_label": when[:40] or None,
         "confidence": str(payload.get("confidence") or "low"),

@@ -717,7 +717,8 @@ LABEL_REPLY = (
 )
 
 SUPPLEMENT_REPLY = (
-    '{"name": "Мультивитамины", "when_label": "утром", "confidence": "medium",'
+    '{"name": "Мультивитамины", "serving": 2, "serving_unit": "капсула",'
+    ' "when_label": "утром", "confidence": "medium",'
     ' "comment": "состав с банки", "items": ['
     '{"name": "Витамин D3", "nutrient_key": "vit_d", "dose": 2000, "unit": "IU"},'
     '{"name": "Магний", "nutrient_key": "magnesium", "dose": 400, "unit": "mg"},'
@@ -791,6 +792,33 @@ class TestSupplementLabelPhoto:
         assert result["when_label"] == "утром"
         assert [i["unit"] for i in result["items"]] == ["МЕ", "мг", "г"]
         assert [i["dose"] for i in result["items"]] == [2000, 400, 5]
+
+    def test_label_serving_is_returned_for_rescaling(self, client, fake_ai):
+        fake_ai([SUPPLEMENT_REPLY])
+        result = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()
+        # Дозы отданы как на банке — на две капсулы; пересчёт под свой приём делает клиент.
+        assert result["serving"] == 2
+        assert result["serving_unit"] == "капсула"
+        assert result["items"][1]["dose"] == 400
+
+    def test_missing_serving_means_one_unit(self, client, fake_ai):
+        fake_ai(['{"name": "X", "items": [{"name": "Цинк", "dose": 15, "unit": "мг"}]}'])
+        result = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()
+        assert result["serving"] == 1
+        assert result["serving_unit"] == "порция"
+
+    def test_invented_serving_unit_falls_back_to_portion(self, client, fake_ai):
+        fake_ai(['{"name": "X", "serving": 3, "serving_unit": "софтгель",'
+                 ' "items": [{"name": "Цинк", "dose": 15, "unit": "мг"}]}'])
+        result = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()
+        assert result["serving"] == 3
+        assert result["serving_unit"] == "порция"
+
+    def test_absurd_serving_is_capped(self, client, fake_ai):
+        fake_ai(['{"name": "X", "serving": 900, "serving_unit": "капсула",'
+                 ' "items": [{"name": "Цинк", "dose": 15, "unit": "мг"}]}'])
+        result = client.post("/api/ai/supplement-label", json={"image_base64": PHOTO}).json()
+        assert result["serving"] == 20
 
     def test_substance_outside_catalog_is_kept_without_key(self, client, fake_ai):
         fake_ai([SUPPLEMENT_REPLY])
