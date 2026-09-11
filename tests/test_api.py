@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 DAY = "2026-08-10"
@@ -351,6 +353,71 @@ ITEMS = [
     {"name": "Яйцо", "grams": 100, "per100": {"calories_kcal": 155, "protein_g": 13, "iron": 1.2}},
     {"name": "Сыр", "grams": 50, "per100": {"calories_kcal": 350, "protein_g": 25, "calcium": 700}},
 ]
+
+
+class TestRecentMeals:
+    """Повтор блюда: список недавних записей для копирования в текущий день."""
+
+    def test_recent_returns_newest_first(self, client):
+        from api.db import today
+
+        now = today()
+        for offset, name in ((3, "Позавчерашний"), (1, "Вчерашний"), (0, "Сегодняшний")):
+            day = (now - timedelta(days=offset)).isoformat()
+            client.post(f"/api/diary/{day}/meals", json={"name": name, "protein_g": 10})
+
+        names = [m["name"] for m in client.get("/api/meals/recent").json()]
+        assert names == ["Сегодняшний", "Вчерашний", "Позавчерашний"]
+
+    def test_same_dish_is_listed_once(self, client):
+        from api.db import today
+
+        now = today()
+        for offset, kcal in ((2, 300), (0, 500)):
+            day = (now - timedelta(days=offset)).isoformat()
+            client.post(
+                f"/api/diary/{day}/meals",
+                json={"name": "Овсянка", "protein_g": 10, "calories_kcal": kcal},
+            )
+        recent = client.get("/api/meals/recent").json()
+        assert len(recent) == 1
+        # Берём последнюю запись: в ней актуальная граммовка.
+        assert recent[0]["calories_kcal"] == 500
+
+    def test_old_meals_are_out_of_the_window(self, client):
+        from api.db import today
+
+        old_day = (today() - timedelta(days=40)).isoformat()
+        client.post(f"/api/diary/{old_day}/meals", json={"name": "Древнее", "protein_g": 10})
+        assert client.get("/api/meals/recent").json() == []
+        assert len(client.get("/api/meals/recent?days=60").json()) == 1
+
+    def test_composition_travels_with_the_meal(self, client):
+        from api.db import today
+
+        client.post(
+            f"/api/diary/{today().isoformat()}/meals",
+            json={"name": "Омлет", "protein_g": 10, "items": ITEMS},
+        )
+        recent = client.get("/api/meals/recent").json()
+        assert [i["name"] for i in recent[0]["items"]] == ["Яйцо", "Сыр"]
+
+    def test_limit_is_respected(self, client):
+        from api.db import today
+
+        for index in range(5):
+            client.post(
+                f"/api/diary/{today().isoformat()}/meals",
+                json={"name": f"Блюдо {index}", "protein_g": 10},
+            )
+        assert len(client.get("/api/meals/recent?limit=2").json()) == 2
+
+    def test_other_users_meals_are_invisible(self, client):
+        from api.db import today
+
+        client.post(f"/api/diary/{today().isoformat()}/meals", json={"name": "Моё", "protein_g": 10})
+        client.headers["X-Dev-User-Id"] = "999"
+        assert client.get("/api/meals/recent").json() == []
 
 
 class TestMealPatchSemantics:

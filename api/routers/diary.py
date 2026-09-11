@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from .. import repo, reports
 from ..auth import TelegramUser, current_user
@@ -100,6 +100,25 @@ def create_meal(
             },
         )
     return meal
+
+
+#: За сколько дней назад предлагаем повторить блюдо и сколько строк показываем.
+RECENT_DAYS = 14
+MAX_RECENT = 30
+
+
+@router.get("/meals/recent", response_model=list[MealOut])
+def recent_meals(
+    days: int = Query(default=RECENT_DAYS, ge=1, le=60),
+    limit: int = Query(default=20, ge=1, le=MAX_RECENT),
+    user: TelegramUser = Depends(current_user),
+) -> list[dict]:
+    """Что ел на днях — чтобы повторить запись, а не вносить её заново.
+
+    Объявлено до `/meals/{meal_id}`: иначе путь уехал бы в разбор идентификатора.
+    """
+    since = today() - timedelta(days=days - 1)
+    return repo.recent_meals(user.id, since.isoformat(), limit)
 
 
 @router.get("/meals/{meal_id}", response_model=MealOut)

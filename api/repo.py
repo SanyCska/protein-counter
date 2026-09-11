@@ -351,6 +351,31 @@ def meals_for_day(user_id: int, day: str) -> list[dict]:
         return [_meal_row(r, _items_for(conn, r["id"])) for r in rows]
 
 
+def recent_meals(user_id: int, since: str, limit: int) -> list[dict]:
+    """Недавние блюда для повтора: по одному на название, свежие сверху.
+
+    Одноимённые записи схлопываем: человек ест овсянку каждое утро, и список из
+    семи одинаковых строк никому не поможет выбрать. Берём последнюю — в ней
+    актуальная граммовка.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM protein_entries WHERE user_id = ? AND day >= ? ORDER BY day DESC, COALESCE(eaten_at, '99:99') DESC, id DESC",
+            (user_id, since),
+        ).fetchall()
+        seen: set[str] = set()
+        out: list[dict] = []
+        for row in rows:
+            key = (row["food_name"] or "").strip().casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(_meal_row(row, _items_for(conn, row["id"])))
+            if len(out) >= limit:
+                break
+    return out
+
+
 def meals_for_range(user_id: int, start: str, end: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(

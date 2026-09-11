@@ -92,6 +92,7 @@ POST   /api/diary/{day}/meals           -> добавить блюдо (ручн
 PATCH  /api/meals/{id}                  -> правка (граммовка, КБЖУ, время, тип)
 DELETE /api/meals/{id}
 GET    /api/meals/{id}                  -> деталь с ингредиентами и микро
+GET    /api/meals/recent                -> недавние блюда для повтора (по одному на название)
 
 POST   /api/ai/parse                    -> {text, image_base64?} -> разбор в позиции с КБЖУ и микро
 POST   /api/ai/label                    -> {image_base64} -> состав продукта с фото упаковки
