@@ -420,6 +420,90 @@ class TestRecentMeals:
         assert client.get("/api/meals/recent").json() == []
 
 
+class TestWeightLog:
+    """Дневник веса: одна запись на день плюс ряд для графика."""
+
+    def test_weight_is_saved_and_returned_with_the_day(self, client):
+        assert client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 75.4}).json() == {
+            "day": DAY,
+            "weight_kg": 75.4,
+        }
+        assert client.get(f"/api/diary/{DAY}").json()["weight_kg"] == 75.4
+
+    def test_second_weighing_replaces_the_first(self, client):
+        client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 75.4})
+        client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 74.9})
+        assert client.get(f"/api/diary/{DAY}").json()["weight_kg"] == 74.9
+
+    def test_day_without_weighing_has_none(self, client):
+        assert client.get(f"/api/diary/{DAY}").json()["weight_kg"] is None
+
+    def test_weight_can_be_cleared(self, client):
+        client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 75.4})
+        assert client.delete(f"/api/diary/{DAY}/weight").status_code == 204
+        assert client.get(f"/api/diary/{DAY}").json()["weight_kg"] is None
+        assert client.delete(f"/api/diary/{DAY}/weight").status_code == 404
+
+    def test_absurd_weight_rejected(self, client):
+        assert client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 5}).status_code == 422
+        assert client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 900}).status_code == 422
+
+    def test_latest_weighing_becomes_the_profile_weight(self, client):
+        from api.db import today
+
+        client.put(f"/api/diary/{today().isoformat()}/weight", json={"weight_kg": 80.5})
+        assert client.get("/api/profile").json()["weight_kg"] == 80.5
+
+    def test_backdated_weighing_does_not_touch_the_profile(self, client):
+        from api.db import today
+
+        client.put(f"/api/diary/{today().isoformat()}/weight", json={"weight_kg": 80.5})
+        client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 99})
+        assert client.get("/api/profile").json()["weight_kg"] == 80.5
+
+    def test_other_users_weight_is_invisible(self, client):
+        client.put(f"/api/diary/{DAY}/weight", json={"weight_kg": 75.4})
+        client.headers["X-Dev-User-Id"] = "999"
+        assert client.get(f"/api/diary/{DAY}").json()["weight_kg"] is None
+
+
+class TestWeightProgress:
+    def test_series_keeps_gaps_and_counts_average(self, client):
+        from api.db import today
+
+        now = today()
+        for offset, weight in ((2, 76.0), (0, 75.0)):
+            day = (now - timedelta(days=offset)).isoformat()
+            client.put(f"/api/diary/{day}/weight", json={"weight_kg": weight})
+
+        progress = client.get("/api/progress?range=week").json()
+        assert progress["weight"][-1] == 75.0
+        assert progress["weight"][-2] is None
+        assert progress["weight"][-3] == 76.0
+        assert progress["weight_avg"] == 75.5
+        # Внутри периода вес снизился на килограмм.
+        assert progress["weight_change"] == -1.0
+        assert progress["weight_days"] == 2
+
+    def test_delta_compares_with_the_previous_period(self, client):
+        from api.db import today
+
+        now = today()
+        client.put(f"/api/diary/{(now - timedelta(days=8)).isoformat()}/weight", json={"weight_kg": 78})
+        client.put(f"/api/diary/{now.isoformat()}/weight", json={"weight_kg": 76})
+
+        progress = client.get("/api/progress?range=week").json()
+        assert progress["weight_avg"] == 76.0
+        assert progress["weight_delta"] == -2.0
+
+    def test_empty_log_gives_no_numbers(self, client):
+        progress = client.get("/api/progress?range=week").json()
+        assert progress["weight_avg"] is None
+        assert progress["weight_change"] is None
+        assert progress["weight_delta"] is None
+        assert set(progress["weight"]) == {None}
+
+
 class TestMealPatchSemantics:
     def test_other_user_cannot_strip_items_via_delete(self, client):
         meal = add_meal(client, items=ITEMS)

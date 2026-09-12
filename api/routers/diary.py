@@ -10,7 +10,7 @@ from .. import repo, reports
 from ..auth import TelegramUser, current_user
 from ..db import today
 from ..deps import not_found, parse_day
-from ..schemas import MealIn, MealOut, MealPatch
+from ..schemas import MealIn, MealOut, MealPatch, WeightIn, WeightOut
 
 router = APIRouter(tags=["diary"])
 
@@ -35,6 +35,7 @@ def read_day(day: str, user: TelegramUser = Depends(current_user)) -> dict:
         "meals": meals,
         "workouts": workouts,
         "supplements": supplements,
+        "weight_kg": repo.weight_for_day(user.id, target.isoformat()),
         "totals": {
             "calories_eaten": round(totals["calories_eaten"]),
             "calories_burned": round(totals["calories_burned"]),
@@ -50,6 +51,28 @@ def read_day(day: str, user: TelegramUser = Depends(current_user)) -> dict:
         },
         "norms": norms,
     }
+
+
+@router.put("/diary/{day}/weight", response_model=WeightOut)
+def set_weight(day: str, payload: WeightIn, user: TelegramUser = Depends(current_user)) -> dict:
+    """Записать вес за день.
+
+    Свежайшее взвешивание заодно становится весом профиля: от него считаются нормы
+    и расход на нагрузке, и держать их на цифре месячной давности незачем. Запись
+    задним числом профиль не трогает — прошлый вес не отменяет сегодняшний.
+    """
+    target = parse_day(day)
+    result = repo.set_weight(user.id, target.isoformat(), payload.weight_kg)
+    latest = repo.last_weight_day(user.id)
+    if latest is None or target.isoformat() >= latest:
+        repo.update_profile(user.id, {"weight_kg": payload.weight_kg})
+    return result
+
+
+@router.delete("/diary/{day}/weight", status_code=204)
+def remove_weight(day: str, user: TelegramUser = Depends(current_user)) -> None:
+    if not repo.delete_weight(user.id, parse_day(day).isoformat()):
+        raise not_found("Взвешивание")
 
 
 @router.get("/diary/{day}/week")

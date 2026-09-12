@@ -779,6 +779,62 @@ def delete_product(user_id: int, product_id: int) -> bool:
         return cur.rowcount > 0
 
 
+# ───────────────────────────────── вес ──────────────────────────────────
+
+#: Границы дневника веса совпадают с профилем: ниже 25 и выше 350 кг — опечатка.
+MIN_WEIGHT = 25.0
+MAX_WEIGHT = 350.0
+
+
+def set_weight(user_id: int, day: str, weight_kg: float) -> dict:
+    """Записать вес за день. Повторное взвешивание заменяет предыдущее."""
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO weight_log (user_id, day, weight_kg, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, day) DO UPDATE SET weight_kg = excluded.weight_kg,
+                                                    updated_at = excluded.updated_at
+            """,
+            (user_id, day, float(weight_kg), now_iso()),
+        )
+    return {"day": day, "weight_kg": float(weight_kg)}
+
+
+def delete_weight(user_id: int, day: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM weight_log WHERE user_id = ? AND day = ?", (user_id, day)
+        )
+        return cur.rowcount > 0
+
+
+def weight_for_day(user_id: int, day: str) -> float | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT weight_kg FROM weight_log WHERE user_id = ? AND day = ?", (user_id, day)
+        ).fetchone()
+    return float(row["weight_kg"]) if row else None
+
+
+def weights_for_range(user_id: int, start: str, end: str) -> dict[str, float]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT day, weight_kg FROM weight_log WHERE user_id = ? AND day BETWEEN ? AND ? ORDER BY day",
+            (user_id, start, end),
+        ).fetchall()
+    return {r["day"]: float(r["weight_kg"]) for r in rows}
+
+
+def last_weight_day(user_id: int) -> str | None:
+    """Самый свежий день со взвешиванием — по нему решаем, обновлять ли профиль."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT day FROM weight_log WHERE user_id = ? ORDER BY day DESC LIMIT 1", (user_id,)
+        ).fetchone()
+    return row["day"] if row else None
+
+
 # ──────────────────────────────── даты ──────────────────────────────────
 
 

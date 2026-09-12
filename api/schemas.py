@@ -233,6 +233,17 @@ class ProfileOut(BaseModel):
     norms: dict
 
 
+class WeightIn(BaseModel):
+    """Взвешивание за день. Границы те же, что у веса в профиле."""
+
+    weight_kg: float = Field(ge=25, le=350)
+
+
+class WeightOut(BaseModel):
+    day: str
+    weight_kg: float
+
+
 class ProductIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     protein_g: float = Field(ge=0, le=1000)

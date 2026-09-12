@@ -271,15 +271,23 @@ def build_period_report(
     }
 
 
+def _diff(value: float, base: float) -> float:
+    """Разница с точностью до сотни граммов. Минус ноль приводим к нулю: «-0,0 кг»
+    в интерфейсе выглядит поломкой, а не отсутствием изменений."""
+    delta = round(value - base, 1)
+    return 0.0 if delta == 0 else delta
+
+
 def build_progress(
     *,
     days: list[str],
     meals: list[dict],
     workouts: list[dict],
     norms: dict,
+    weights: dict[str, float] | None = None,
     previous: dict | None = None,
 ) -> dict:
-    """Ряды для четырёх графиков прогресса плюс плитки статистики."""
+    """Ряды для графиков прогресса плюс плитки статистики."""
     eaten: dict[str, float] = {d: 0.0 for d in days}
     protein: dict[str, float] = {d: 0.0 for d in days}
     burned: dict[str, float] = {d: 0.0 for d in days}
@@ -319,6 +327,17 @@ def build_progress(
 
     # Баланс к норме считается по съеденному: расход живёт своим графиком.
     net = {d: eaten[d] - norms["calories"] for d in days}
+
+    weights = weights or {}
+    # Взвешиваются не каждый день, поэтому в ряду дырки, а среднее считаем
+    # по фактическим взвешиваниям, а не по длине периода.
+    logged = [weights[d] for d in days if d in weights]
+    weight_avg = sum(logged) / len(logged) if logged else None
+    weight_change = _diff(logged[-1], logged[0]) if len(logged) >= 2 else None
+    prev_avg = (previous or {}).get("weight_avg")
+    weight_delta = (
+        _diff(weight_avg, prev_avg) if weight_avg is not None and prev_avg else None
+    )
 
     tiles = [
         {
@@ -360,6 +379,13 @@ def build_progress(
         "calories": [round(eaten[d]) for d in days],
         "protein": [round(protein[d]) for d in days],
         "burned": [round(burned[d]) for d in days],
+        # None в ряду — день без взвешивания: линия на графике должна рваться,
+        # а не падать в ноль.
+        "weight": [round(weights[d], 1) if d in weights else None for d in days],
+        "weight_avg": round(weight_avg, 1) if weight_avg is not None else None,
+        "weight_change": weight_change,
+        "weight_delta": weight_delta,
+        "weight_days": len(logged),
         "net": [round(net[d]) for d in days],
         "norms": norms,
         "avg_calories": round(avg_calories),

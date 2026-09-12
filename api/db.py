@@ -211,6 +211,20 @@ def migrate() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_supplements_user ON supplements (user_id)"
         )
+
+        # Дневник веса: одна запись на день, поэтому ключ составной, а не autoincrement —
+        # повторное взвешивание в тот же день заменяет предыдущее, а не плодит строки.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS weight_log (
+                user_id INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                weight_kg REAL NOT NULL,
+                updated_at TEXT,
+                PRIMARY KEY (user_id, day)
+            )
+            """
+        )
         # Название банки: одна добавка — это часто десяток веществ, и в списке они
         # должны стоять одной строкой, а не десятью.
         _add_column(conn, "supplements", "group_name", "TEXT")
