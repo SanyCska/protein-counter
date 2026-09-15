@@ -225,6 +225,17 @@ def migrate() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS step_log (
+                user_id INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                steps INTEGER NOT NULL,
+                updated_at TEXT,
+                PRIMARY KEY (user_id, day)
+            )
+            """
+        )
         # Название банки: одна добавка — это часто десяток веществ, и в списке они
         # должны стоять одной строкой, а не десятью.
         _add_column(conn, "supplements", "group_name", "TEXT")

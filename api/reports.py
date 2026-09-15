@@ -285,6 +285,7 @@ def build_progress(
     workouts: list[dict],
     norms: dict,
     weights: dict[str, float] | None = None,
+    steps: dict[str, int] | None = None,
     previous: dict | None = None,
 ) -> dict:
     """Ряды для графиков прогресса плюс плитки статистики."""
@@ -339,6 +340,15 @@ def build_progress(
         _diff(weight_avg, prev_avg) if weight_avg is not None and prev_avg else None
     )
 
+    steps = steps or {}
+    # Шаги записывают не каждый день, поэтому среднее — по дням с записью, а сумма
+    # честно подписывается тем же числом дней: «за неделю» из трёх записей не выйдет.
+    step_days = [steps[d] for d in days if d in steps]
+    steps_avg = sum(step_days) / len(step_days) if step_days else None
+    steps_total = sum(step_days)
+    prev_steps = (previous or {}).get("steps_avg")
+    steps_delta = _diff(steps_avg, prev_steps) if steps_avg is not None and prev_steps else None
+
     tiles = [
         {
             "key": "avg_calories",
@@ -386,6 +396,13 @@ def build_progress(
         "weight_change": weight_change,
         "weight_delta": weight_delta,
         "weight_days": len(logged),
+        # None — день без записи: столбца на графике быть не должно, а ноль читался бы
+        # как «не вставал с дивана».
+        "steps": [steps[d] if d in steps else None for d in days],
+        "steps_avg": round(steps_avg) if steps_avg is not None else None,
+        "steps_total": steps_total,
+        "steps_delta": round(steps_delta) if steps_delta is not None else None,
+        "steps_days": len(step_days),
         "net": [round(net[d]) for d in days],
         "norms": norms,
         "avg_calories": round(avg_calories),

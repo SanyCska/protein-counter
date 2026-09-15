@@ -835,6 +835,47 @@ def last_weight_day(user_id: int) -> str | None:
     return row["day"] if row else None
 
 
+# ──────────────────────────────── шаги ──────────────────────────────────
+
+
+def set_steps(user_id: int, day: str, steps: int) -> dict:
+    """Записать шаги за день. Повторная запись заменяет предыдущую."""
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO step_log (user_id, day, steps, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, day) DO UPDATE SET steps = excluded.steps,
+                                                    updated_at = excluded.updated_at
+            """,
+            (user_id, day, int(steps), now_iso()),
+        )
+    return {"day": day, "steps": int(steps)}
+
+
+def delete_steps(user_id: int, day: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM step_log WHERE user_id = ? AND day = ?", (user_id, day))
+        return cur.rowcount > 0
+
+
+def steps_for_day(user_id: int, day: str) -> int | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT steps FROM step_log WHERE user_id = ? AND day = ?", (user_id, day)
+        ).fetchone()
+    return int(row["steps"]) if row else None
+
+
+def steps_for_range(user_id: int, start: str, end: str) -> dict[str, int]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT day, steps FROM step_log WHERE user_id = ? AND day BETWEEN ? AND ? ORDER BY day",
+            (user_id, start, end),
+        ).fetchall()
+    return {r["day"]: int(r["steps"]) for r in rows}
+
+
 # ──────────────────────────────── даты ──────────────────────────────────
 
 

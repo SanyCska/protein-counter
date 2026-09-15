@@ -74,6 +74,7 @@ def progress(
         workouts=repo.workouts_for_range(user.id, prev_days[0], prev_days[-1]),
         norms=norms,
         weights=repo.weights_for_range(user.id, prev_days[0], prev_days[-1]),
+        steps=repo.steps_for_range(user.id, prev_days[0], prev_days[-1]),
     )
 
     # Пустой прошлый период — не «0 ккал», а отсутствие данных: иначе плитка
@@ -85,8 +86,11 @@ def progress(
                 (t["value"] for t in previous["tiles"] if t["key"] == "macro_days"), 0
             ),
             "weight_avg": previous["weight_avg"],
+            "steps_avg": previous["steps_avg"],
         }
-        if any(previous["calories"]) or previous["weight_avg"] is not None
+        if any(previous["calories"])
+        or previous["weight_avg"] is not None
+        or previous["steps_avg"] is not None
         else None
     )
 
@@ -96,6 +100,7 @@ def progress(
         workouts=repo.workouts_for_range(user.id, days[0], days[-1]),
         norms=norms,
         weights=repo.weights_for_range(user.id, days[0], days[-1]),
+        steps=repo.steps_for_range(user.id, days[0], days[-1]),
         previous=previous_summary,
     )
     return {"range": range, "start": days[0], "end": days[-1], **current}

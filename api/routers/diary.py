@@ -10,7 +10,7 @@ from .. import repo, reports
 from ..auth import TelegramUser, current_user
 from ..db import today
 from ..deps import not_found, parse_day
-from ..schemas import MealIn, MealOut, MealPatch, WeightIn, WeightOut
+from ..schemas import MealIn, MealOut, MealPatch, StepsIn, StepsOut, WeightIn, WeightOut
 
 router = APIRouter(tags=["diary"])
 
@@ -36,6 +36,7 @@ def read_day(day: str, user: TelegramUser = Depends(current_user)) -> dict:
         "workouts": workouts,
         "supplements": supplements,
         "weight_kg": repo.weight_for_day(user.id, target.isoformat()),
+        "steps": repo.steps_for_day(user.id, target.isoformat()),
         "totals": {
             "calories_eaten": round(totals["calories_eaten"]),
             "calories_burned": round(totals["calories_burned"]),
@@ -73,6 +74,22 @@ def set_weight(day: str, payload: WeightIn, user: TelegramUser = Depends(current
 def remove_weight(day: str, user: TelegramUser = Depends(current_user)) -> None:
     if not repo.delete_weight(user.id, parse_day(day).isoformat()):
         raise not_found("Взвешивание")
+
+
+@router.put("/diary/{day}/steps", response_model=StepsOut)
+def set_steps(day: str, payload: StepsIn, user: TelegramUser = Depends(current_user)) -> dict:
+    """Записать шаги за день.
+
+    В отличие от веса, профиль они не трогают: расход на нагрузке считается по записям
+    тренировок, и приписывать к нему ещё и шаги значило бы посчитать их дважды.
+    """
+    return repo.set_steps(user.id, parse_day(day).isoformat(), payload.steps)
+
+
+@router.delete("/diary/{day}/steps", status_code=204)
+def remove_steps(day: str, user: TelegramUser = Depends(current_user)) -> None:
+    if not repo.delete_steps(user.id, parse_day(day).isoformat()):
+        raise not_found("Запись шагов")
 
 
 @router.get("/diary/{day}/week")

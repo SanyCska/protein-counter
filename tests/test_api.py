@@ -467,6 +467,87 @@ class TestWeightLog:
         assert client.get(f"/api/diary/{DAY}").json()["weight_kg"] is None
 
 
+class TestStepLog:
+    """Шаги за день: одна запись на день плюс ряд для графика."""
+
+    def test_steps_are_saved_and_returned_with_the_day(self, client):
+        assert client.put(f"/api/diary/{DAY}/steps", json={"steps": 8421}).json() == {
+            "day": DAY,
+            "steps": 8421,
+        }
+        assert client.get(f"/api/diary/{DAY}").json()["steps"] == 8421
+
+    def test_second_entry_replaces_the_first(self, client):
+        client.put(f"/api/diary/{DAY}/steps", json={"steps": 3000})
+        client.put(f"/api/diary/{DAY}/steps", json={"steps": 12010})
+        assert client.get(f"/api/diary/{DAY}").json()["steps"] == 12010
+
+    def test_day_without_steps_has_none(self, client):
+        assert client.get(f"/api/diary/{DAY}").json()["steps"] is None
+
+    def test_steps_can_be_cleared(self, client):
+        client.put(f"/api/diary/{DAY}/steps", json={"steps": 8421})
+        assert client.delete(f"/api/diary/{DAY}/steps").status_code == 204
+        assert client.get(f"/api/diary/{DAY}").json()["steps"] is None
+        assert client.delete(f"/api/diary/{DAY}/steps").status_code == 404
+
+    def test_zero_steps_is_a_valid_day(self, client):
+        client.put(f"/api/diary/{DAY}/steps", json={"steps": 0})
+        assert client.get(f"/api/diary/{DAY}").json()["steps"] == 0
+
+    def test_absurd_counts_rejected(self, client):
+        assert client.put(f"/api/diary/{DAY}/steps", json={"steps": -5}).status_code == 422
+        assert client.put(f"/api/diary/{DAY}/steps", json={"steps": 999999}).status_code == 422
+
+    def test_steps_do_not_touch_the_profile_weight(self, client):
+        from api.db import today
+
+        before = client.get("/api/profile").json()["weight_kg"]
+        client.put(f"/api/diary/{today().isoformat()}/steps", json={"steps": 9000})
+        assert client.get("/api/profile").json()["weight_kg"] == before
+
+    def test_other_users_steps_are_invisible(self, client):
+        client.put(f"/api/diary/{DAY}/steps", json={"steps": 8421})
+        client.headers["X-Dev-User-Id"] = "999"
+        assert client.get(f"/api/diary/{DAY}").json()["steps"] is None
+
+
+class TestStepsProgress:
+    def test_series_keeps_gaps_and_counts_average(self, client):
+        from api.db import today
+
+        now = today()
+        for offset, steps in ((2, 12000), (0, 6000)):
+            day = (now - timedelta(days=offset)).isoformat()
+            client.put(f"/api/diary/{day}/steps", json={"steps": steps})
+
+        progress = client.get("/api/progress?range=week").json()
+        assert progress["steps"][-1] == 6000
+        assert progress["steps"][-2] is None
+        assert progress["steps"][-3] == 12000
+        assert progress["steps_avg"] == 9000
+        assert progress["steps_total"] == 18000
+        assert progress["steps_days"] == 2
+
+    def test_delta_compares_with_the_previous_period(self, client):
+        from api.db import today
+
+        now = today()
+        client.put(f"/api/diary/{(now - timedelta(days=8)).isoformat()}/steps", json={"steps": 5000})
+        client.put(f"/api/diary/{now.isoformat()}/steps", json={"steps": 9000})
+
+        progress = client.get("/api/progress?range=week").json()
+        assert progress["steps_avg"] == 9000
+        assert progress["steps_delta"] == 4000
+
+    def test_empty_log_gives_no_numbers(self, client):
+        progress = client.get("/api/progress?range=week").json()
+        assert progress["steps_avg"] is None
+        assert progress["steps_total"] == 0
+        assert progress["steps_days"] == 0
+        assert set(progress["steps"]) == {None}
+
+
 class TestWeightProgress:
     def test_series_keeps_gaps_and_counts_average(self, client):
         from api.db import today

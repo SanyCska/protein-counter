@@ -244,6 +244,17 @@ class WeightOut(BaseModel):
     weight_kg: float
 
 
+class StepsIn(BaseModel):
+    """Шаги за день. Больше двухсот тысяч — это уже не ходьба, а опечатка."""
+
+    steps: int = Field(ge=0, le=200000)
+
+
+class StepsOut(BaseModel):
+    day: str
+    steps: int
+
+
 class ProductIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     protein_g: float = Field(ge=0, le=1000)
