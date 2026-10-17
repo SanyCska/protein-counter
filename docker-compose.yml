@@ -54,6 +54,17 @@ services:
       # Выданные сертификаты: без volume каждый рестарт шёл бы за новым.
       - caddy-data:/data
       - caddy-config:/config
+      # Блоки других сайтов на этом сервере (сейчас bu-site): Caddyfile их импортирует,
+      # сами сайты кладут туда свои *.caddy, поэтому деплой protein их не затирает.
+      - /opt/caddy-sites:/etc/caddy/sites:ro
+    networks:
+      - default
+      # Общая сеть, через которую Caddy достаёт контейнеры других сайтов.
+      - edge
+
+networks:
+  edge:
+    external: true
 
 volumes:
   bot-data:

@@ -22,3 +22,6 @@
 
 	encode gzip
 }
+
+# Другие сайты на этом сервере — каждый в своём файле в /opt/caddy-sites.
+import /etc/caddy/sites/*.caddy
